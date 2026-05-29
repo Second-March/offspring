@@ -139,7 +139,14 @@ jobs:
           $studio   = "installer\dist\Offspring-Studio-Setup-$version.exe"
 
           try {
-            pwsh tools/sign-release.ps1 -Tool offspring-sign -KeyPath $keyPath -Files @($standard, $studio)
+            # Call in-process with `&`, NOT `pwsh tools/...`. Spawning a
+            # child pwsh flattens the `@($standard, $studio)` array into
+            # separate argv tokens: the child binds -Files to ONLY the
+            # first element and the second silently lands on the positional
+            # -InstallerPath, which the -Files branch then ignores — so the
+            # studio installer never got signed. An in-process `&` call
+            # passes the array as a real [string[]], signing both.
+            & ./tools/sign-release.ps1 -Tool offspring-sign -KeyPath $keyPath -Files @($standard, $studio)
           } finally {
             Remove-Item -LiteralPath $keyPath -Force -ErrorAction SilentlyContinue
           }

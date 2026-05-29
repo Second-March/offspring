@@ -94,6 +94,24 @@ if (-not $KeyPath) {
 #   2. -InstallerPath (single-file local override)
 #   3. version-based discovery for both Windows installers (default)
 $installers = @()
+# Guard against the array-flattening trap: if a caller spawns this script
+# as a CHILD `pwsh tools/sign-release.ps1 ... -Files @($a, $b)`, the array
+# is split into separate argv tokens — only the first binds to -Files and
+# the rest spill onto the positional -InstallerPath, silently dropping
+# files from the signing set. Both inputs being populated is the signature
+# of that bug, so fail loudly instead of signing a subset. Call the script
+# in-process with `&` to pass -Files as a real [string[]].
+if (($Files -and $Files.Count -gt 0) -and $InstallerPath) {
+    throw @"
+Both -Files and -InstallerPath were supplied. Pass only one.
+
+This usually means an array was flattened across a pwsh process boundary
+(`pwsh tools/sign-release.ps1 ... -Files @(...)`), which silently drops
+all but the first file. Invoke the script in-process instead:
+
+    & ./tools/sign-release.ps1 -Files @($standard, $studio) ...
+"@
+}
 if ($Files -and $Files.Count -gt 0) {
     foreach ($f in $Files) {
         if (-not (Test-Path -LiteralPath $f)) {
