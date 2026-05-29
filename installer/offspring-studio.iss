@@ -13,8 +13,8 @@
 ; for the studio cargo build pass.
 
 #define AppName      "Offspring Studio"
-#define AppVersion   "0.5.0-b0002"
-#define AppVersionMsix "0.5.0.2"
+#define AppVersion   "0.5.1"
+#define AppVersionMsix "0.5.1.0"
 #define AppPublisher "Second March"
 #define AppExeName   "offspring-studio.exe"
 ; Distinct AppId from the standard build so the two installs don't
