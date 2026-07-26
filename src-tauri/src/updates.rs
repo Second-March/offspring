@@ -3,11 +3,28 @@
 //!
 //! `check_for_updates` hits `https://api.github.com/repos/<slug>/releases/latest`,
 //! parses the `tag_name` / asset list, and tells the UI whether a newer
-//! version is published. `download_update` streams the Inno Setup `.exe`
-//! asset into `%LOCALAPPDATA%\Offspring\updates\` with progress events on
-//! `update-download`. `install_update` launches that downloaded installer
-//! with `/VERYSILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS` and exits
-//! the current process so the installer can overwrite the exe.
+//! version is published. `download_update` streams the platform's
+//! installer asset into the per-user updates directory with progress
+//! events on `update-download`. `install_update` then hands off to it.
+//!
+//! ## Per-platform installer shape
+//!
+//! Both platforms share the download + minisign-verification path; only
+//! the asset name and the handoff differ.
+//!
+//! | | Windows | macOS |
+//! |---|---|---|
+//! | asset | `Offspring-Setup-<ver>.exe` (Inno Setup) | `Offspring_<ver>_universal.dmg` |
+//! | staged at | `%LOCALAPPDATA%\Offspring\updates\` | `~/Library/Application Support/Offspring/updates/` |
+//! | handoff | run silently with `/VERYSILENT /LAUNCHAFTER`, then exit | `open` the .dmg (mounts + shows the Finder window), then exit |
+//!
+//! macOS has no unattended equivalent of a silent Inno run — a .dmg is a
+//! disk image, not an installer, and the user drags the bundle to
+//! /Applications themselves. We still quit afterwards, because macOS
+//! won't let the copy overwrite `Offspring.app` while it's running.
+//! Everything up to that point (asset discovery, resumable staging,
+//! signature verification against the pinned key) is identical, so a Mac
+//! update is just as verified as a Windows one.
 //!
 //! Any HTTP/parse failure in the check degrades silently to
 //! `update_available: false` so a network blip or an empty releases page
@@ -101,8 +118,10 @@ pub struct UpdateInfo {
     /// Release landing page — used as a fallback if the direct installer
     /// URL is missing.
     pub html_url: String,
-    /// Direct .exe asset URL if we could find an `Offspring-Setup-*.exe`
-    /// attached to the release. Empty otherwise.
+    /// Direct URL of the installer asset for the *running* platform —
+    /// `Offspring-Setup-*.exe` on Windows, `Offspring*.dmg` on macOS.
+    /// Empty when the release carries no asset this platform can use, in
+    /// which case the UI falls back to opening `html_url`.
     pub installer_url: String,
     /// Release notes body from the GitHub release. Markdown source as
     /// authored; the Settings page renders it as plain text with
@@ -187,6 +206,39 @@ fn is_plausible_tag(tag: &str) -> bool {
 /// release JSON was tampered with or the maintainer pasted an asset URL
 /// from a third-party mirror — neither is something we want to silently
 /// download and execute.
+/// True iff `name` is the release asset this platform should install.
+///
+/// Windows wants the Inno Setup installer. Note the `offspring-setup`
+/// prefix deliberately excludes `Offspring-Studio-Setup-*.exe`, which is
+/// published to the same release — a standard build must never pull the
+/// Studio installer, and vice versa (Studio has no updater at all, so it
+/// never reaches this code).
+///
+/// macOS wants the universal .dmg. Tauri's dmg bundler names it
+/// `Offspring_<version>_universal.dmg`; we match on the prefix and
+/// extension only so a bundler rename (arch suffix, separator change)
+/// doesn't silently stop finding updates.
+///
+/// Any other platform has no published installer, so nothing matches and
+/// the UI falls back to the release page.
+#[cfg(not(feature = "studio"))]
+fn is_installer_asset(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    #[cfg(windows)]
+    {
+        n.starts_with("offspring-setup") && n.ends_with(".exe")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        n.starts_with("offspring") && n.ends_with(".dmg")
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = n;
+        false
+    }
+}
+
 #[cfg(not(feature = "studio"))]
 fn is_trusted_asset_host(url: &str) -> bool {
     const ALLOWED: &[&str] = &[
@@ -225,9 +277,7 @@ pub fn check_for_updates() -> UpdateInfo {
                 .assets
                 .iter()
                 .find(|a| {
-                    let n = a.name.to_ascii_lowercase();
-                    n.starts_with("offspring-setup")
-                        && n.ends_with(".exe")
+                    is_installer_asset(&a.name)
                         && is_trusted_asset_host(&a.browser_download_url)
                 })
                 .map(|a| a.browser_download_url.clone())
@@ -311,9 +361,14 @@ pub fn download_update(app: AppHandle, version: String, installer_url: String) -
     Ok(())
 }
 
-/// Launch the previously-downloaded installer for `version` and exit the
-/// app so Inno Setup can overwrite `offspring.exe`. If no matching
+/// Hand off to the previously-downloaded installer for `version` and exit
+/// the app so it can replace the running binary. If no matching
 /// downloaded file exists, returns an error and does NOT exit.
+///
+/// On macOS this means `open`ing the .dmg — see the module header for why
+/// there's no silent equivalent — and quitting so the user can drag the
+/// new bundle over the old one. The Windows path below is the original
+/// Inno Setup handoff, unchanged.
 ///
 /// Relaunch is handled by the installer itself: we pass our custom
 /// `/LAUNCHAFTER` switch, and offspring.iss's `[Run]` section reads that
@@ -340,42 +395,71 @@ pub fn install_update(version: String) -> Result<(), String> {
         ));
     }
 
-    // /VERYSILENT — no UI. /NORESTART — never reboot the machine.
-    // /SUPPRESSMSGBOXES — pair with /SILENT to swallow any "another
-    // instance is running" prompts if the restart-app handshake misfires.
-    // /LAUNCHAFTER — our custom flag; offspring.iss's ShouldLaunchAfter
-    // [Code] check reads it to decide whether to relaunch the new exe.
-    let mut child = std::process::Command::new(&path)
-        .args(["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES", "/LAUNCHAFTER"])
-        .spawn()
-        .map_err(|e| format!("spawning installer: {e}"))?;
-
-    // Give the installer a beat to start up (and for Windows to elevate
-    // via UAC on its manifest) before we release our own exe file handle
-    // by exiting — the installer can't overwrite offspring.exe while
-    // we still hold it. Before exiting, verify the child didn't bail out
-    // immediately (AV quarantine, broken Authenticode, missing manifest):
-    // if `try_wait` reports it's already exited with a non-zero status,
-    // surface the failure as an error instead of vanishing the app and
-    // leaving the user wondering where it went.
-    std::thread::sleep(Duration::from_millis(500));
-    match child.try_wait() {
-        Ok(Some(status)) if !status.success() => {
+    // macOS: mount the .dmg and let Finder show it. `open` returns as
+    // soon as the image is mounted, so a non-zero exit here is a real
+    // failure (corrupt image, no mount permission) and worth surfacing
+    // instead of quitting into a void.
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("/usr/bin/open")
+            .arg(&path)
+            .status()
+            .map_err(|e| format!("opening {}: {e}", path.display()))?;
+        if !status.success() {
             return Err(format!(
-                "installer exited early with status {status}; update not applied"
+                "could not open {} ({status}); the download may be corrupt — \
+                 delete it and check for updates again",
+                path.display()
             ));
         }
-        Ok(Some(_)) => {
-            // Exited successfully in <500ms — extremely unlikely for a
-            // real install, but treat it the same as "we did our part"
-            // and quit so the user can relaunch manually.
-        }
-        Ok(None) => {
-            // Still running, the expected path.
-        }
-        Err(e) => return Err(format!("checking installer status: {e}")),
+        // Quit so the drag-to-Applications copy isn't blocked by the
+        // running bundle. The mounted volume stays up across our exit —
+        // it belongs to the user's session, not this process.
+        std::process::exit(0);
     }
-    std::process::exit(0);
+
+    #[cfg(windows)]
+    {
+        // /VERYSILENT — no UI. /NORESTART — never reboot the machine.
+        // /SUPPRESSMSGBOXES — pair with /SILENT to swallow any "another
+        // instance is running" prompts if the restart-app handshake misfires.
+        // /LAUNCHAFTER — our custom flag; offspring.iss's ShouldLaunchAfter
+        // [Code] check reads it to decide whether to relaunch the new exe.
+        let mut child = std::process::Command::new(&path)
+            .args(["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES", "/LAUNCHAFTER"])
+            .spawn()
+            .map_err(|e| format!("spawning installer: {e}"))?;
+
+        // Give the installer a beat to start up (and for Windows to elevate
+        // via UAC on its manifest) before we release our own exe file handle
+        // by exiting — the installer can't overwrite offspring.exe while
+        // we still hold it. Before exiting, verify the child didn't bail out
+        // immediately (AV quarantine, broken Authenticode, missing manifest):
+        // if `try_wait` reports it's already exited with a non-zero status,
+        // surface the failure as an error instead of vanishing the app and
+        // leaving the user wondering where it went.
+        std::thread::sleep(Duration::from_millis(500));
+        match child.try_wait() {
+            Ok(Some(status)) if !status.success() => {
+                return Err(format!(
+                    "installer exited early with status {status}; update not applied"
+                ));
+            }
+            Ok(Some(_)) => {
+                // Exited successfully in <500ms — extremely unlikely for a
+                // real install, but treat it the same as "we did our part"
+                // and quit so the user can relaunch manually.
+            }
+            Ok(None) => {
+                // Still running, the expected path.
+            }
+            Err(e) => return Err(format!("checking installer status: {e}")),
+        }
+        std::process::exit(0);
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    Err("in-app updates are not supported on this platform".to_string())
 }
 
 #[cfg(not(feature = "studio"))]
@@ -387,7 +471,19 @@ fn emit(app: &AppHandle, ev: UpdateDownloadEvent) {
 fn installer_path(version: &str) -> Result<PathBuf> {
     let dir = paths::local_data_dir()?.join("updates");
     std::fs::create_dir_all(&dir).context("creating updates dir")?;
-    Ok(dir.join(format!("Offspring-Setup-{version}.exe")))
+    #[cfg(windows)]
+    {
+        Ok(dir.join(format!("Offspring-Setup-{version}.exe")))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Ok(dir.join(format!("Offspring-{version}.dmg")))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (dir, version);
+        bail!("no installer format is defined for this platform")
+    }
 }
 
 #[cfg(not(feature = "studio"))]
@@ -414,9 +510,19 @@ fn stream_installer(app: &AppHandle, version: &str, url: &str) -> Result<PathBuf
     }
 
     // Download into a sibling .part file, then atomically rename. That way
-    // a crashed / cancelled download never leaves a truncated .exe that
-    // `install_update` would try to run.
-    let tmp_path = final_path.with_extension("exe.part");
+    // a crashed / cancelled download never leaves a truncated installer
+    // that `install_update` would try to run.
+    //
+    // Appended rather than `with_extension("exe.part")` — that spelling
+    // hard-coded the Windows extension, and on macOS it would have
+    // rewritten `Offspring-0.5.1.dmg` to `Offspring-0.5.1.exe.part`
+    // (with_extension replaces, it doesn't append). Pushing onto the
+    // OsString keeps whatever real extension the platform uses.
+    let tmp_path = {
+        let mut s = final_path.clone().into_os_string();
+        s.push(".part");
+        PathBuf::from(s)
+    };
 
     emit(
         app,
@@ -606,6 +712,31 @@ mod tests {
         assert!(is_plausible_tag("v0.3.42"));
         assert!(is_plausible_tag("0.3.42-b0007"));
         assert!(is_plausible_tag("v1.0.0-rc1"));
+    }
+
+    /// Asset names are the real ones published on the v0.5.1 release.
+    /// The invariant that matters on Windows is the negative case: a
+    /// standard build must never select the Studio installer (Studio has
+    /// no updater, so the reverse can't happen). Dropping the trailing
+    /// dash from the `offspring-setup` prefix would silently break it —
+    /// `Offspring-Studio-Setup-…` doesn't start with `offspring-setup`,
+    /// but `offspring` alone would match both.
+    #[test]
+    #[cfg(windows)]
+    fn installer_asset_picks_standard_exe_only() {
+        assert!(is_installer_asset("Offspring-Setup-0.5.1.exe"));
+        assert!(!is_installer_asset("Offspring-Studio-Setup-0.5.1.exe"));
+        assert!(!is_installer_asset("Offspring-Setup-0.5.1.exe.minisig"));
+        assert!(!is_installer_asset("Offspring_0.5.1_universal.dmg"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn installer_asset_picks_dmg_only() {
+        assert!(is_installer_asset("Offspring_0.5.1_universal.dmg"));
+        assert!(!is_installer_asset("Offspring_0.5.1_universal.dmg.minisig"));
+        assert!(!is_installer_asset("Offspring-Setup-0.5.1.exe"));
+        assert!(!is_installer_asset("Offspring-Studio-Setup-0.5.1.exe"));
     }
 
     #[test]

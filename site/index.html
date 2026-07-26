@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Offspring — Right-click, convert, done</title>
+    <meta
+      name="description"
+      content="Video and image conversion presets in your right-click menu, powered by FFmpeg. Free, open source, and nothing ever leaves your machine. Windows 11 and macOS."
+    />
+    <meta name="robots" content="index,follow" />
+    <meta name="application-name" content="Offspring" />
+    <meta name="theme-color" content="#f9f8f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0c0c0e" media="(prefers-color-scheme: dark)" />
+    <link rel="author" href="https://secondmarch.xyz/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Offspring" />
+    <meta property="og:title" content="Offspring — Right-click, convert, done" />
+    <meta
+      property="og:description"
+      content="Drop a .mov on a right-click preset, get a Discord-ready GIF in the same folder. No app to open, no upload, no command line."
+    />
+
+    <link rel="icon" type="image/png" href="/icon.png" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Funnel+Sans:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme before first paint, so a dark-mode visitor never gets a cream
+         flash. Follows the system unless the toggle saved a choice. -->
+    <script>
+      try {
+        var t = localStorage.getItem('offspring-theme')
+        var dark = t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
+        if (dark) document.documentElement.classList.add('theme-dark')
+      } catch (e) {}
+    </script>
+    <style>
+      html { background: #f9f8f3; }
+      html.theme-dark { background: #0c0c0e; }
+    </style>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ld">
+      <header class="ld-top">
+        <a class="ld-brand" href="/">
+          <img class="ld-sigil" src="/icon.png" width="28" height="28" alt="" />
+          <span class="ld-wordmark">Offspring</span>
+        </a>
+        <nav class="ld-nav">
+          <a class="ld-nav-link" href="#install">Install</a>
+          <a class="ld-nav-link" href="https://github.com/second-march/offspring">GitHub</a>
+          <a class="ld-top-demo" href="https://github.com/second-march/offspring/releases/latest">Download</a>
+          <button class="ld-theme" type="button" aria-label="Toggle dark mode">
+            <span class="ld-theme-dot" aria-hidden="true"></span>
+          </button>
+        </nav>
+      </header>
+
+      <main class="ld-main">
+        <section class="ld-hero">
+          <p class="ld-eyebrow">Free &amp; open source · Windows 11 and macOS</p>
+          <h1>Right-click. Pick a preset. Done.</h1>
+          <p class="ld-dek">
+            A screen recording that needs to be a GIF small enough for Discord. A ProRes export
+            that has to become an MP4 someone can actually open. Offspring puts those conversions
+            in the menu you already right-click, so the file never leaves the folder it's sitting in.
+          </p>
+          <div class="ld-cta-row">
+            <a class="ld-btn primary" href="https://github.com/second-march/offspring/releases/latest">
+              Download for Windows or Mac
+            </a>
+            <a class="ld-btn" href="https://github.com/second-march/offspring">View the source</a>
+          </div>
+          <p class="ld-fine">
+            MIT-licensed · no account, no telemetry, no uploads · v0.5.1
+          </p>
+        </section>
+
+        <section class="ld-heroshot">
+          <figure class="ld-shot ld-shot-menu">
+            <img
+              src="/shots/contextmenu.webp"
+              width="517"
+              height="345"
+              alt="Windows right-click menu showing Offspring's preset submenu over a video file"
+              loading="eager"
+            />
+          </figure>
+          <p class="ld-fine">
+            The whole app, most days. Your presets sit one click inside the menu that was already
+            under your cursor.
+          </p>
+        </section>
+
+        <section class="ld-exhibit">
+          <p class="ld-eyebrow">The point</p>
+          <h2>Ninety seconds, gone, every single time</h2>
+          <p class="ld-sub">
+            The old way has a shape: find a converter, wait for the page, upload 40 MB, wait again,
+            download to <em>Downloads</em>, drag it back to the folder it came from, delete the one
+            with <code>(1)</code> in the name. Or open a whole application, set up a queue, pick a
+            destination, remember what preset you used last time.
+          </p>
+          <p class="ld-sub">
+            Offspring replaces all of that with two clicks and no waiting on anyone's server. The
+            output lands next to the input, named after it. Do it four times a week and you've
+            bought back an afternoon a year — which is a small thing, except it's the small thing
+            that used to make you not bother.
+          </p>
+        </section>
+
+        <section class="ld-exhibit">
+          <p class="ld-eyebrow">Encoding · Progress</p>
+          <h2>One small window, then it's gone</h2>
+          <p class="ld-sub">
+            No dock icon, no project to save, nothing to close. A compact always-on-top window
+            counts through your selection file by file and dismisses itself when it's finished.
+            Select twelve clips and it works through all twelve — the shell hands the whole
+            selection over in one go.
+          </p>
+          <figure class="ld-shot ld-shot-sm">
+            <img
+              src="/shots/encoding.webp"
+              width="382"
+              height="172"
+              alt="Offspring's small encoding progress window showing a file being converted"
+              loading="lazy"
+            />
+          </figure>
+        </section>
+
+        <section class="ld-exhibit">
+          <p class="ld-eyebrow">Presets · Yours</p>
+          <h2>The presets are yours to shape</h2>
+          <p class="ld-sub">
+            It ships with the ones you'd have made anyway — a Discord-ready GIF, a compressed MP4, a
+            cropped 9:16 vertical, a 1080p downscale. Edit them, reorder them, add your own. Each
+            preset carries its own crop, target file size, palette and dither, so "the one that
+            fits under 10 MB" is a preset and not a thing you re-derive every time.
+          </p>
+          <figure class="ld-shot">
+            <img
+              src="/shots/main.webp"
+              width="640"
+              height="575"
+              alt="Offspring's main window showing the preset list and GIF settings"
+              loading="lazy"
+            />
+          </figure>
+        </section>
+
+        <section class="ld-exhibit">
+          <p class="ld-eyebrow">Tools</p>
+          <h2>And the jobs that aren't conversions</h2>
+          <p class="ld-sub">
+            The same menu carries the small edits you'd otherwise open an editor for. Each one works
+            on your whole selection.
+          </p>
+        </section>
+
+        <section class="ld-trio">
+          <div class="ld-tile">
+            <h3>Trim</h3>
+            <p>Frame-accurate. Strip frames off the head and tail, or cut a range out of the middle.</p>
+          </div>
+          <div class="ld-tile">
+            <h3>Modify</h3>
+            <p>Crop, rotate, flip, reverse, drop the audio — with a scrubbable preview of the actual file.</p>
+          </div>
+          <div class="ld-tile">
+            <h3>Compare</h3>
+            <p>Two files stack side by side; three or more arrange into a grid for an A/B look.</p>
+          </div>
+          <div class="ld-tile">
+            <h3>Merge</h3>
+            <p>Concatenate a selection into one file, in filename order, settings inherited from the first.</p>
+          </div>
+          <div class="ld-tile">
+            <h3>Overlay</h3>
+            <p>Burn in filename, timecode or your own text per corner, with optional guides and a watermark.</p>
+          </div>
+          <div class="ld-tile">
+            <h3>Greyscale &amp; Invert</h3>
+            <p>Desaturate anything, or invert an image to a negative — handy for cleaning up masks.</p>
+          </div>
+          <div class="ld-tile">
+            <h3>Make Square</h3>
+            <p>Pad the shorter edge to a square, transparent or matched to the corner pixel.</p>
+          </div>
+          <div class="ld-tile">
+            <h3>Image sequences</h3>
+            <p>Right-click one numbered frame and Offspring finds the rest of the sequence for you.</p>
+          </div>
+          <div class="ld-tile">
+            <h3>Custom, once</h3>
+            <p>Need a one-off that isn't worth a preset? Tweak the settings for just this run.</p>
+          </div>
+        </section>
+
+        <section class="ld-exhibit ld-compare-sec">
+          <p class="ld-eyebrow">Compared</p>
+          <h2>Next to how you're doing it now</h2>
+          <p class="ld-sub">
+            HandBrake is genuinely good and FFmpeg is what Offspring runs on — neither is the enemy.
+            The difference is how much ceremony stands between you and one converted file.
+          </p>
+          <div class="ld-panel ld-compare">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Offspring</th>
+                    <th>Web converter</th>
+                    <th>HandBrake</th>
+                    <th>ffmpeg by hand</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="ld-cmp-feat">Convert without opening an app</td>
+                    <td class="ld-cmp ld-cmp-yes">✓</td>
+                    <td class="ld-cmp ld-cmp-no">—</td>
+                    <td class="ld-cmp ld-cmp-no">—</td>
+                    <td class="ld-cmp ld-cmp-part">a terminal</td>
+                  </tr>
+                  <tr>
+                    <td class="ld-cmp-feat">Output lands next to the input</td>
+                    <td class="ld-cmp ld-cmp-yes">✓</td>
+                    <td class="ld-cmp ld-cmp-no">via Downloads</td>
+                    <td class="ld-cmp ld-cmp-part">you pick a path</td>
+                    <td class="ld-cmp ld-cmp-part">you type a path</td>
+                  </tr>
+                  <tr>
+                    <td class="ld-cmp-feat">Nothing leaves your machine</td>
+                    <td class="ld-cmp ld-cmp-yes">✓</td>
+                    <td class="ld-cmp ld-cmp-no">—</td>
+                    <td class="ld-cmp ld-cmp-yes">✓</td>
+                    <td class="ld-cmp ld-cmp-yes">✓</td>
+                  </tr>
+                  <tr>
+                    <td class="ld-cmp-feat">Whole selection in one go</td>
+                    <td class="ld-cmp ld-cmp-yes">✓</td>
+                    <td class="ld-cmp ld-cmp-part">upload each</td>
+                    <td class="ld-cmp ld-cmp-yes">queue</td>
+                    <td class="ld-cmp ld-cmp-part">write a loop</td>
+                  </tr>
+                  <tr>
+                    <td class="ld-cmp-feat">Your settings, remembered</td>
+                    <td class="ld-cmp ld-cmp-yes">presets</td>
+                    <td class="ld-cmp ld-cmp-no">—</td>
+                    <td class="ld-cmp ld-cmp-yes">presets</td>
+                    <td class="ld-cmp ld-cmp-part">shell history</td>
+                  </tr>
+                  <tr>
+                    <td class="ld-cmp-feat">File-size ceiling</td>
+                    <td class="ld-cmp ld-cmp-yes">none</td>
+                    <td class="ld-cmp ld-cmp-no">usually capped</td>
+                    <td class="ld-cmp ld-cmp-yes">none</td>
+                    <td class="ld-cmp ld-cmp-yes">none</td>
+                  </tr>
+                  <tr>
+                    <td class="ld-cmp-feat">Target a max output size</td>
+                    <td class="ld-cmp ld-cmp-yes">per preset</td>
+                    <td class="ld-cmp ld-cmp-part">sometimes</td>
+                    <td class="ld-cmp ld-cmp-part">by bitrate maths</td>
+                    <td class="ld-cmp ld-cmp-part">by bitrate maths</td>
+                  </tr>
+                  <tr>
+                    <td class="ld-cmp-feat">Cost</td>
+                    <td class="ld-cmp ld-cmp-price">Free · MIT</td>
+                    <td class="ld-cmp ld-cmp-part">free tier, then upsell</td>
+                    <td class="ld-cmp ld-cmp-yes">Free · GPL</td>
+                    <td class="ld-cmp ld-cmp-yes">Free · LGPL</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="ld-buy" id="install">
+          <p class="ld-eyebrow">Install</p>
+          <h2>Two minutes, and one of them is the download</h2>
+          <p class="ld-sub">
+            Grab the installer from the releases page. Every build is signed offline with a
+            minisign key whose public half is pinned inside the app.
+          </p>
+
+          <div class="ld-apps">
+            <div class="ld-app">
+              <h3>Windows 11</h3>
+              <ol class="ld-steps">
+                <li>Download <code>Offspring-Setup-&lt;version&gt;.exe</code> and run it.</li>
+                <li>
+                  It installs for you alone — no admin prompt, no UAC — and the right-click entries
+                  appear straight away.
+                </li>
+                <li>Right-click any video or image. You're done.</li>
+              </ol>
+              <p class="ld-app-note">
+                Windows may show a SmartScreen notice — there's no paid Authenticode certificate
+                behind this. <em>More info → Run anyway</em>. Optionally turn on the Windows&nbsp;11
+                top-level menu (no "Show more options") from Settings.
+              </p>
+            </div>
+
+            <div class="ld-app">
+              <h3>macOS</h3>
+              <ol class="ld-steps">
+                <li>Download the <code>.dmg</code> and drag Offspring to Applications.</li>
+                <li>Launch it once. It's signed and notarized, so Gatekeeper lets it through.</li>
+                <li>
+                  Turn the Finder integration on:
+                  <span class="ld-path"
+                    >System Settings → Keyboard → Keyboard Shortcuts → Services → Files and
+                    Folders</span
+                  >
+                  and tick <strong>Offspring…</strong>
+                </li>
+              </ol>
+              <p class="ld-app-note">
+                That third step is macOS being macOS — it hides newly-installed services by default.
+                After it, Offspring lives in Finder's right-click → Services menu.
+              </p>
+            </div>
+          </div>
+
+          <p class="ld-ios">
+            On first launch Offspring fetches a small FFmpeg build into its own folder if you don't
+            already have one — or point it at the FFmpeg you've got
+            (<code>/opt/homebrew/bin/ffmpeg</code>, say) in Settings.
+          </p>
+        </section>
+
+        <section class="ld-exhibit ld-faq">
+          <p class="ld-eyebrow">FAQ</p>
+          <h2>Frequently asked:</h2>
+          <div class="ld-faq-list">
+            <div class="ld-faq-item">
+              <h3 class="ld-faq-q">Do I need to install FFmpeg myself?</h3>
+              <div class="ld-faq-a">
+                <p>
+                  No. If there isn't one on your machine, Offspring offers to download a build into
+                  its own per-user folder — about 80 MB on Windows, a universal static build on
+                  macOS — and verifies its SHA-256 before unpacking it. If you already have FFmpeg,
+                  point Settings at it and nothing gets downloaded at all.
+                </p>
+              </div>
+            </div>
+            <div class="ld-faq-item">
+              <h3 class="ld-faq-q">Does anything get uploaded?</h3>
+              <div class="ld-faq-a">
+                <p>
+                  No. There's no analytics, no telemetry, and the app makes zero outbound requests
+                  on its own. The only three network calls that exist are ones you click: the
+                  FFmpeg download, an update check, and the update download that follows it. Your
+                  files are only ever read from and written to the folder they live in.
+                </p>
+              </div>
+            </div>
+            <div class="ld-faq-item">
+              <h3 class="ld-faq-q">Where does the converted file go?</h3>
+              <div class="ld-faq-a">
+                <p>
+                  Right next to the original, with a suffix from the preset — so
+                  <code>clip.mov</code> becomes <code>clip_discord.gif</code> in the same folder.
+                  Nothing is overwritten unless you explicitly ask the Modify tool to.
+                </p>
+              </div>
+            </div>
+            <div class="ld-faq-item">
+              <h3 class="ld-faq-q">Can I convert several files at once?</h3>
+              <div class="ld-faq-a">
+                <p>
+                  Yes — select as many as you like and pick a preset once. The progress window walks
+                  the list. Merge and Compare are the tools that treat the selection as a group
+                  rather than one-by-one.
+                </p>
+              </div>
+            </div>
+            <div class="ld-faq-item">
+              <h3 class="ld-faq-q">What formats does it handle?</h3>
+              <div class="ld-faq-a">
+                <p>
+                  Whatever FFmpeg reads, which is nearly everything — including ProRes, DNxHD and
+                  awkward MKVs. Output is MP4, GIF, or a still image as PNG, JPEG, WebP or AVIF.
+                </p>
+              </div>
+            </div>
+            <div class="ld-faq-item">
+              <h3 class="ld-faq-q">What's the "Studio" build on the releases page?</h3>
+              <div class="ld-faq-a">
+                <p>
+                  The same app with every outbound code path compiled out — no FFmpeg downloader, no
+                  update check, no certificate handling. For locked-down machines where an app that
+                  <em>could</em> reach the network is the problem. You supply FFmpeg yourself.
+                </p>
+              </div>
+            </div>
+            <div class="ld-faq-item">
+              <h3 class="ld-faq-q">Is FFmpeg bundled into it?</h3>
+              <div class="ld-faq-a">
+                <p>
+                  No — Offspring calls FFmpeg as a separate executable and never links against it,
+                  so FFmpeg's LGPL doesn't propagate. FFmpeg is © the FFmpeg developers under
+                  LGPL&nbsp;v2.1+; Offspring itself is MIT.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="ld-tail">
+          <h2>Put it in the menu and forget about it</h2>
+          <p class="ld-sub">
+            That's the whole idea. You stop thinking about conversion as a task with a beginning and
+            an end, and it becomes a thing you do in passing.
+          </p>
+          <div class="ld-cta-row">
+            <a class="ld-btn primary" href="https://github.com/second-march/offspring/releases/latest">
+              Download Offspring
+            </a>
+          </div>
+        </section>
+      </main>
+
+      <footer class="ld-foot">
+        <span>© 2026 <a href="https://secondmarch.xyz/">Second March</a></span>
+        <span class="ld-foot-links">
+          <a href="https://github.com/second-march/offspring/releases/latest">Releases</a>
+          <a href="https://github.com/second-march/offspring">Source</a>
+          <a href="https://github.com/second-march/offspring/blob/main/SECURITY.md">Security</a>
+          <a href="https://github.com/second-march/offspring/blob/main/NOTICE.md">Attributions</a>
+          <a href="https://github.com/second-march/offspring/blob/main/LICENSE">MIT</a>
+        </span>
+      </footer>
+    </div>
+
+    <script>
+      // Theme toggle. Persists a choice; with nothing saved we keep following
+      // the system for as long as the page is open.
+      var root = document.documentElement
+      var mq = matchMedia('(prefers-color-scheme: dark)')
+      mq.addEventListener('change', function (e) {
+        if (!localStorage.getItem('offspring-theme')) root.classList.toggle('theme-dark', e.matches)
+      })
+      document.querySelector('.ld-theme').addEventListener('click', function () {
+        var dark = !root.classList.contains('theme-dark')
+        root.classList.toggle('theme-dark', dark)
+        try {
+          localStorage.setItem('offspring-theme', dark ? 'dark' : 'light')
+        } catch (e) {}
+      })
+    </script>
+  </body>
+</html>

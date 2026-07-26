@@ -61,9 +61,24 @@ export const getPlatform = () => invoke<"windows" | "macos" | "linux">("get_plat
 export const pickRunPreset = (files: string[], preset_id: string) =>
   invoke<void>("pick_run_preset", { files, presetId: preset_id });
 
-/** macOS Services picker: open the chosen tool's dialog window on the pasted files.
- *  `tool` is one of: "modify" | "trim" | "compare". */
-export const pickRunTool = (files: string[], tool: "modify" | "trim" | "compare") =>
+/** macOS Services picker: run the chosen tool on the pasted files.
+ *
+ *  "modify" / "trim" open a dialog window; "compare" opens the grid
+ *  dialog for 3+ files and encodes directly for exactly 2; the rest
+ *  encode directly and open the progress window. Must stay in sync
+ *  with the `match tool.as_str()` arms in `commands.rs::pick_run_tool`
+ *  — anything else comes back as an "unknown tool" error. */
+export type PickTool =
+  | "grayscale"
+  | "overlay"
+  | "merge"
+  | "compare"
+  | "trim"
+  | "invert"
+  | "make_square"
+  | "modify";
+
+export const pickRunTool = (files: string[], tool: PickTool) =>
   invoke<void>("pick_run_tool", { files, tool });
 export const openDataFolder = () => invoke<void>("open_data_folder");
 /** Open `%LOCALAPPDATA%\Offspring` in Explorer with `debug.log`
@@ -288,9 +303,16 @@ export const getAppVersion = () => invoke<string>("get_app_version");
 export const downloadUpdate = (version: string, installerUrl: string) =>
   invoke<void>("download_update", { version, installerUrl });
 
-/** Launch the previously-downloaded installer silently and exit the app
- * so Inno Setup can overwrite offspring.exe. The installer re-launches
- * Offspring automatically after the swap. */
+/** Hand off to the previously-downloaded installer and exit the app so it
+ *  can replace the running binary.
+ *
+ *  Windows: runs the Inno Setup installer silently; it re-launches
+ *  Offspring automatically after the swap.
+ *  macOS: mounts the .dmg and quits — a disk image has no silent install,
+ *  and macOS won't let the copy overwrite a running Offspring.app, so the
+ *  user drags it across themselves. Nothing re-launches afterwards.
+ *
+ *  Either way this call does not return on success: the process exits. */
 export const installUpdate = (version: string) =>
   invoke<void>("install_update", { version });
 
@@ -298,8 +320,9 @@ export type UpdateDownloadEvent = {
   /** "downloading" | "done" | "error" */
   phase: string;
   percent: number | null;
-  /** On "done": absolute path to the downloaded .exe. On "error": the
-   * error message. On "downloading": a human-readable byte count. */
+  /** On "done": absolute path to the downloaded installer (.exe on
+   * Windows, .dmg on macOS). On "error": the error message. On
+   * "downloading": a human-readable byte count. */
   message: string | null;
 };
 

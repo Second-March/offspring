@@ -16,7 +16,14 @@
     __DISPLAY_NAME__    — the label users see in the right-click menu
     __VERB_ID__         — desktop5:Verb Id (any unique string)
     __CLSID__           — both com:Class and desktop5:Verb point at it
-    Version="…"         — bumped per build (regex-replaced)
+    __VERSION__         — package version, four-numeric (X.Y.Z.B)
+
+  __VERSION__ is a literal placeholder rather than a regex-replace over
+  the existing value on purpose. The old pattern was
+  `Version="\d+\.\d+\.\d+\.\d+"`, which is unanchored — it also matched
+  the `Version="10.0.19041.0"` *inside* `MinVersion=` on the
+  TargetDeviceFamily line below and rewrote the OS floor to the app's
+  own version, producing a manifest MakeAppx rejects.
 
   The three variants live in the same source tree because they share
   every other field. Each one signs separately but with the same cert.
@@ -44,7 +51,7 @@
   <Identity
     Name="__IDENTITY_NAME__"
     Publisher="CN=Second March"
-    Version="0.2.0.0"
+    Version="__VERSION__"
     ProcessorArchitecture="x64" />
 
   <Properties>

@@ -4,7 +4,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import FormatFields from "$lib/components/FormatFields.svelte";
   import * as api from "$lib/api";
-  import type { Preset, Settings, FfmpegStatus, UpdateInfo } from "$lib/types";
+  import type { Preset, Settings, ToolsSettings, FfmpegStatus, UpdateInfo } from "$lib/types";
 
   let presets = $state<Preset[]>([]);
   let selectedId = $state<string | null>(null);
@@ -184,56 +184,32 @@
   }
 
   function ensureTools() {
-    if (!settings.tools) {
-      settings.tools = {
-        sequence: { enabled: true, min_digits: 4, default_fps: 24 },
-        merge: { enabled: true },
-        grayscale: { enabled: true },
-        compare: { enabled: true },
-        trim: { enabled: true },
-        overlay: {
-          enabled: false,
-          top_left: "filename",
-          top_right: "none",
-          bottom_left: "none",
-          bottom_right: "timecode",
-          custom_text: "",
-          custom_text_2: "",
-          opacity: 90,
-          color: "white",
-          border: false,
-          metadata: true,
-          guides: false,
-          show_16_9: true,
-          show_9_16: true,
-          show_4_5: false,
-          color_16_9: "0xe5484d",
-          color_9_16: "0x00c2d7",
-          color_4_5: "0xf5d90a",
-          guides_opacity: 90,
-          metadata_font_scale: 100,
-        },
-      };
+    // Work on a local so TypeScript keeps the non-undefined narrowing for
+    // the whole body, then assign back once. Note there is deliberately no
+    // "settings.tools is entirely missing" fast path that spells out every
+    // default inline: a second copy of the defaults is exactly how the
+    // overlay watermark fields went missing from one branch and not the
+    // other. The per-key back-fills below cover both the fresh-install and
+    // the upgrade case.
+    const t = (settings.tools ?? {}) as ToolsSettings;
+
+    if (!t.sequence) {
+      t.sequence = { enabled: true, min_digits: 4, default_fps: 24 };
     }
-    if (!settings.tools.sequence) {
-      settings.tools.sequence = { enabled: true, min_digits: 4, default_fps: 24 };
+    if (t.sequence.default_fps == null) {
+      t.sequence.default_fps = 24;
     }
-    if (settings.tools.sequence.default_fps == null) {
-      settings.tools.sequence.default_fps = 24;
-    }
-    if (!settings.tools.merge) settings.tools.merge = { enabled: true };
-    if (!settings.tools.grayscale) settings.tools.grayscale = { enabled: true };
-    if (!settings.tools.compare) settings.tools.compare = { enabled: true };
-    if (!settings.tools.trim) settings.tools.trim = { enabled: true };
-    if (!settings.tools.invert) settings.tools.invert = { enabled: true, clamp: false };
-    if (settings.tools.invert.clamp == null) settings.tools.invert.clamp = false;
-    if (!settings.tools.make_square)
-      settings.tools.make_square = { enabled: true, fill_mode: "transparent" };
-    if (settings.tools.make_square.fill_mode == null)
-      settings.tools.make_square.fill_mode = "transparent";
-    if (!settings.tools.modify) settings.tools.modify = { enabled: true };
-    if (!settings.tools.overlay) {
-      settings.tools.overlay = {
+    if (!t.merge) t.merge = { enabled: true };
+    if (!t.grayscale) t.grayscale = { enabled: true };
+    if (!t.compare) t.compare = { enabled: true };
+    if (!t.trim) t.trim = { enabled: true };
+    if (!t.invert) t.invert = { enabled: true, clamp: false };
+    if (t.invert.clamp == null) t.invert.clamp = false;
+    if (!t.make_square) t.make_square = { enabled: true, fill_mode: "transparent" };
+    if (t.make_square.fill_mode == null) t.make_square.fill_mode = "transparent";
+    if (!t.modify) t.modify = { enabled: true };
+    if (!t.overlay) {
+      t.overlay = {
         enabled: false,
         top_left: "filename",
         top_right: "none",
@@ -261,16 +237,18 @@
     }
     // Back-fill overlay fields for settings loaded from older installs
     // so newly-added toggles start from sane defaults.
-    if (settings.tools.overlay.custom_text_2 == null) settings.tools.overlay.custom_text_2 = "";
-    if (settings.tools.overlay.color_16_9 == null) settings.tools.overlay.color_16_9 = "0xe5484d";
-    if (settings.tools.overlay.color_9_16 == null) settings.tools.overlay.color_9_16 = "0x00c2d7";
-    if (settings.tools.overlay.color_4_5 == null) settings.tools.overlay.color_4_5 = "0xf5d90a";
-    if (settings.tools.overlay.metadata == null) settings.tools.overlay.metadata = true;
-    if (settings.tools.overlay.guides_opacity == null) settings.tools.overlay.guides_opacity = 90;
-    if (settings.tools.overlay.metadata_font_scale == null) settings.tools.overlay.metadata_font_scale = 100;
-    if (settings.tools.overlay.watermark_enabled == null) settings.tools.overlay.watermark_enabled = false;
-    if (settings.tools.overlay.watermark_path == null) settings.tools.overlay.watermark_path = "";
-    if (settings.tools.overlay.watermark_opacity == null) settings.tools.overlay.watermark_opacity = 100;
+    if (t.overlay.custom_text_2 == null) t.overlay.custom_text_2 = "";
+    if (t.overlay.color_16_9 == null) t.overlay.color_16_9 = "0xe5484d";
+    if (t.overlay.color_9_16 == null) t.overlay.color_9_16 = "0x00c2d7";
+    if (t.overlay.color_4_5 == null) t.overlay.color_4_5 = "0xf5d90a";
+    if (t.overlay.metadata == null) t.overlay.metadata = true;
+    if (t.overlay.guides_opacity == null) t.overlay.guides_opacity = 90;
+    if (t.overlay.metadata_font_scale == null) t.overlay.metadata_font_scale = 100;
+    if (t.overlay.watermark_enabled == null) t.overlay.watermark_enabled = false;
+    if (t.overlay.watermark_path == null) t.overlay.watermark_path = "";
+    if (t.overlay.watermark_opacity == null) t.overlay.watermark_opacity = 100;
+
+    settings.tools = t;
   }
 
   onMount(async () => {
@@ -907,7 +885,8 @@
       {#if upd.phase === "downloading"}
         Downloading <strong>{update.latest}</strong>{upd.percent != null ? ` — ${Math.round(upd.percent)}%` : "…"}
       {:else if upd.phase === "ready"}
-        Version <strong>{update.latest}</strong> is ready to install.
+        Version <strong>{update.latest}</strong> is downloaded and
+        {isMac ? "ready to open." : "ready to install."}
       {:else if upd.phase === "error"}
         Update <strong>{update.latest}</strong> couldn't download automatically.
       {:else}
@@ -923,14 +902,18 @@
         ></div>
       </div>
     {:else}
+      <!-- No `disabled` guard needed: this branch only renders when the
+           phase is NOT "downloading" (the progress bar takes over then). -->
       <button
         type="button"
         class="update-btn"
         onclick={onUpdateClick}
-        disabled={upd.phase === "downloading"}
       >
         {#if upd.phase === "ready"}
-          Restart and install
+          <!-- macOS gets a .dmg, not a silent installer: we mount it and
+               quit so the user can drag the new bundle over the running
+               one. "Restart and install" would be a promise we don't keep. -->
+          {isMac ? "Quit and open installer" : "Restart and install"}
         {:else if upd.phase === "error"}
           Open download page
         {:else}

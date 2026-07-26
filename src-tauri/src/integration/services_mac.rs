@@ -34,7 +34,7 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
-use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
+use objc2::{class, declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{NSApp, NSPasteboard};
 use objc2_foundation::{MainThreadMarker, NSArray, NSString};
 use std::sync::OnceLock;
@@ -85,14 +85,30 @@ declare_class!(
 
 /// Pull the file paths out of the pasteboard.
 ///
-/// Uses the legacy `NSFilenamesPboardType` path: `propertyListForType:`
-/// returns an NSArray<NSString> of filenames, which is much simpler
-/// than the modern NSURL-based API (no class-array dance to construct
-/// the type filter, no NSURL → path conversion). The type is
-/// deprecated in 10.14 but still works on every current macOS; we'll
-/// switch to the modern API once we have a Mac in hand for testing
-/// the bindings.
+/// Two readers, tried in order, because the type we *declare* and the
+/// type we *read* don't match. Info.plist advertises
+/// `NSSendTypes = ["public.file-url"]`, but the original implementation
+/// only ever asked for the legacy `NSFilenamesPboardType`. AppKit has
+/// long bridged between the two, so that generally works — but it's a
+/// deprecated-since-10.14 compatibility path, it was never verified on
+/// real hardware, and the failure mode is silent: an empty Vec, a picker
+/// window listing no files, and no error anywhere.
+///
+/// So: try the legacy plist first (unchanged behaviour wherever it
+/// already worked), and fall back to reading `public.file-url` off each
+/// pasteboard item — the type we actually asked the system for — when it
+/// comes back empty.
 fn read_file_paths(pboard: &NSPasteboard) -> Vec<String> {
+    let legacy = read_legacy_filenames(pboard);
+    if !legacy.is_empty() {
+        return legacy;
+    }
+    read_file_urls(pboard)
+}
+
+/// Legacy `NSFilenamesPboardType`: `propertyListForType:` hands back an
+/// NSArray<NSString> of plain filesystem paths, no URL decoding needed.
+fn read_legacy_filenames(pboard: &NSPasteboard) -> Vec<String> {
     unsafe {
         let type_str = NSString::from_str("NSFilenamesPboardType");
         let plist: Option<Retained<NSArray<NSString>>> =
@@ -110,6 +126,46 @@ fn read_file_paths(pboard: &NSPasteboard) -> Vec<String> {
         for i in 0..count {
             let s: Retained<NSString> = msg_send_id![&*plist, objectAtIndex: i];
             result.push(s.to_string());
+        }
+        result
+    }
+}
+
+/// Modern path: one `NSPasteboardItem` per file, each carrying a
+/// `public.file-url` string like `file:///Users/me/a%20clip.mov`. Round
+/// it through NSURL to get the percent-decoding right — naive string
+/// munging mangles any path containing a space or a `#`.
+///
+/// Everything goes through `AnyObject` + raw selectors rather than the
+/// typed `NSPasteboardItem` / `NSURL` bindings, which would each need
+/// another objc2-app-kit / objc2-foundation feature flag enabled for two
+/// method calls.
+fn read_file_urls(pboard: &NSPasteboard) -> Vec<String> {
+    unsafe {
+        let items: Option<Retained<NSArray<AnyObject>>> = msg_send_id![pboard, pasteboardItems];
+        let Some(items) = items else {
+            return Vec::new();
+        };
+
+        let type_str = NSString::from_str("public.file-url");
+        let count: usize = msg_send![&*items, count];
+        let mut result = Vec::with_capacity(count);
+        for i in 0..count {
+            let item: Retained<AnyObject> = msg_send_id![&*items, objectAtIndex: i];
+            let url_str: Option<Retained<NSString>> =
+                msg_send_id![&*item, stringForType: &*type_str];
+            let Some(url_str) = url_str else { continue };
+
+            let url: Option<Retained<AnyObject>> =
+                msg_send_id![class!(NSURL), URLWithString: &*url_str];
+            let Some(url) = url else { continue };
+
+            // `path` is nil for a non-file URL — skip rather than push a
+            // bogus entry the encoder would then fail to open.
+            let path: Option<Retained<NSString>> = msg_send_id![&*url, path];
+            if let Some(path) = path {
+                result.push(path.to_string());
+            }
         }
         result
     }

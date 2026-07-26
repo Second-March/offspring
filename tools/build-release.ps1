@@ -12,6 +12,10 @@
 #      alongside offspring.exe (Inno [Files] picks it up from there)
 #   4. build-msix.ps1                -> installer/msix/dist/OffspringShellExt.msix + .cer
 #   5. iscc.exe installer/offspring.iss -> installer/dist/Offspring-Setup-<ver>.exe
+#   6. npm run tauri build           -> target-studio/release/offspring.exe
+#      --features studio               (cert-free, no-outbound-network variant)
+#   7. iscc.exe installer/offspring-studio.iss
+#                                    -> installer/dist/Offspring-Studio-Setup-<ver>.exe
 #
 # Version handling:
 #   default            "0.3.41"       -> "0.3.41-b0001"    (local iteration)
@@ -56,14 +60,14 @@ try {
             throw "-NoBump is incompatible with -Version / -Release"
         }
         Write-Host ""
-        Write-Host "[0/5] bump-version (skipped - reading package.json)..." -ForegroundColor DarkGray
+        Write-Host "[0/7] bump-version (skipped - reading package.json)..." -ForegroundColor DarkGray
         $pkg = Get-Content (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json
         $Version = $pkg.version
         if (-not $Version) { throw "package.json has no version field" }
     } else {
         $bumper = Join-Path $repoRoot "tools\bump-version.ps1"
         Write-Host ""
-        Write-Host "[0/5] bump-version..." -ForegroundColor Yellow
+        Write-Host "[0/7] bump-version..." -ForegroundColor Yellow
         if ($Version) {
             $Version = & $bumper -Set $Version
         } elseif ($Release) {
@@ -92,16 +96,16 @@ try {
 
     # --- 1. npm ----------------------------------------------------------
     if (-not $SkipInstall) {
-        Write-Host "[1/5] npm ci..." -ForegroundColor Yellow
+        Write-Host "[1/7] npm ci..." -ForegroundColor Yellow
         npm ci
         if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
     } else {
-        Write-Host "[1/5] npm ci (skipped)" -ForegroundColor DarkGray
+        Write-Host "[1/7] npm ci (skipped)" -ForegroundColor DarkGray
     }
 
     # --- 2. tauri build --------------------------------------------------
     Write-Host ""
-    Write-Host "[2/5] npm run tauri build..." -ForegroundColor Yellow
+    Write-Host "[2/7] npm run tauri build..." -ForegroundColor Yellow
     npm run tauri build
     if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
     # Cargo respects CARGO_TARGET_DIR for dev machines that share a target
@@ -118,7 +122,7 @@ try {
 
     # --- 3. shell-ext DLL ------------------------------------------------
     Write-Host ""
-    Write-Host "[3/5] cargo build --release (shell-ext)..." -ForegroundColor Yellow
+    Write-Host "[3/7] cargo build --release (shell-ext)..." -ForegroundColor Yellow
     Push-Location (Join-Path $repoRoot "shell-ext")
     try {
         cargo build --release
@@ -154,13 +158,13 @@ try {
     # parses as bad). Pass the four-numeric form computed from the
     # bumper output instead.
     Write-Host ""
-    Write-Host "[4/5] build-msix.ps1 (msix version $msixVersion)..." -ForegroundColor Yellow
+    Write-Host "[4/7] build-msix.ps1 (msix version $msixVersion)..." -ForegroundColor Yellow
     pwsh (Join-Path $repoRoot "installer\msix\build-msix.ps1") -Version $msixVersion
     if ($LASTEXITCODE -ne 0) { throw "build-msix.ps1 failed" }
 
     # --- 5. Inno Setup ---------------------------------------------------
     Write-Host ""
-    Write-Host "[5/5] Inno Setup (iscc.exe)..." -ForegroundColor Yellow
+    Write-Host "[5/7] Inno Setup (iscc.exe)..." -ForegroundColor Yellow
 
     # Ensure the WebView2 bootstrapper is present. offspring.iss [Files]
     # references it; without it iscc errors out. The file is gitignored
