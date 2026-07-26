@@ -20,9 +20,19 @@ at it.
 
 1. Vercel dashboard → *Add New…* → *Project* → import `second-march/offspring`.
 2. Set **Root Directory** to `site`.
-3. Framework preset *Other*; leave the build command empty and the
-   output directory as the root. There's nothing to compile.
-4. Deploy.
+3. Deploy.
+
+You do **not** need to set the framework preset by hand — `vercel.json`
+in this directory pins it. That file exists because Vercel auto-detects
+SvelteKit from the repo root's `package.json` (that's the Tauri app's
+frontend, not this page) and then tries to run `vite build` in here.
+There's no `package.json` in `site/`, so that fails with
+`vite: command not found` / exit 127. Setting `framework` and
+`buildCommand` to `null` tells Vercel this directory is already built
+and should just be served.
+
+`vercel.json` overrides the dashboard, so the preset can't drift back —
+including if the project is ever deleted and recreated.
 
 **Vercel, from a terminal:**
 
