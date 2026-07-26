@@ -885,7 +885,8 @@
       {#if upd.phase === "downloading"}
         Downloading <strong>{update.latest}</strong>{upd.percent != null ? ` — ${Math.round(upd.percent)}%` : "…"}
       {:else if upd.phase === "ready"}
-        Version <strong>{update.latest}</strong> is ready to install.
+        Version <strong>{update.latest}</strong> is downloaded and
+        {isMac ? "ready to open." : "ready to install."}
       {:else if upd.phase === "error"}
         Update <strong>{update.latest}</strong> couldn't download automatically.
       {:else}
@@ -909,7 +910,10 @@
         onclick={onUpdateClick}
       >
         {#if upd.phase === "ready"}
-          Restart and install
+          <!-- macOS gets a .dmg, not a silent installer: we mount it and
+               quit so the user can drag the new bundle over the running
+               one. "Restart and install" would be a promise we don't keep. -->
+          {isMac ? "Quit and open installer" : "Restart and install"}
         {:else if upd.phase === "error"}
           Open download page
         {:else}

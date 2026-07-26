@@ -6,42 +6,55 @@ then follow the corrected steps.
 
 ## TL;DR
 
+Releases are built and published by CI. Pushing a `vX.Y.Z` tag is the
+whole trigger; you review the draft it produces and click Publish.
+
 ```powershell
-# Iterate locally as many times as you like — each build gets a -bNNNN suffix.
-pwsh tools\build-release.ps1 -SkipInstall
-
-# When the iteration is good, cut the actual release:
-pwsh tools\build-release.ps1 -Version 0.4.4      # explicit version (preferred)
-# OR:   pwsh tools\build-release.ps1 -Release    # auto-bump patch
-
-pwsh tools\sign-release.ps1                      # interactive passphrase
-
-# Duplicate the .minisig for the byte-identical "latest" alias:
-Copy-Item installer\dist\Offspring-Setup-0.4.4.exe.minisig `
-          installer\dist\Offspring-Setup.exe.minisig -Force
-
-# Commit, tag, push, and publish:
+# 1. Set the version and commit it (the bumper touches 8 files).
+pwsh tools\bump-version.ps1 -Set 0.5.2
 git add -A
-git commit -m "v0.4.4: <one-liner>"
-git tag -a v0.4.4 -m "v0.4.4`n`n<release notes here>"
+git commit -m "v0.5.2: <one-liner describing user-visible change>"
+
+# 2. Tag and push. The tag is what starts the release build.
+git tag -a v0.5.2 -m "v0.5.2`n`n<short release notes inside the annotation>"
 git push origin main
-git push origin v0.4.4
-gh release create v0.4.4 `
-  installer\dist\Offspring-Setup-0.4.4.exe `
-  installer\dist\Offspring-Setup-0.4.4.exe.minisig `
-  installer\dist\Offspring-Setup.exe `
-  installer\dist\Offspring-Setup.exe.minisig `
-  --repo Second-March/offspring `
-  --title "Offspring 0.4.4" `
-  --notes "<release notes>"
+git push origin v0.5.2
+
+# 3. Watch .github/workflows/release.yml. On success it leaves a DRAFT
+#    release with all six assets attached. Smoke-test them, write the
+#    notes, hit Publish.
 ```
 
-**Four assets every release.** Versioned `.exe` + versioned `.minisig`
-+ unversioned `Offspring-Setup.exe` (forever-link) + unversioned
-`.minisig` (so the marketing-site one-click download is also
-signature-verifiable). The two `.exe`s are byte-identical, so the same
-`.minisig` is valid for both — copying the file is correct, not a
-workaround.
+Signing happens inside CI from repository secrets — you do **not** run
+`sign-release.ps1` for a CI release, and the private key never leaves
+wherever you keep it. See [Signing in CI](#signing-in-ci).
+
+**Six assets every release**, all versioned:
+
+| Asset | Produced by |
+|---|---|
+| `Offspring-Setup-<ver>.exe` | Windows job (Standard) |
+| `Offspring-Setup-<ver>.exe.minisig` | Windows job |
+| `Offspring-Studio-Setup-<ver>.exe` | Windows job (Studio) |
+| `Offspring-Studio-Setup-<ver>.exe.minisig` | Windows job |
+| `Offspring_<ver>_universal.dmg` | macOS job (signed + notarized) |
+| `Offspring_<ver>_universal.dmg.minisig` | macOS job |
+
+> **The unversioned forever-link is gone.** Earlier releases were
+> documented as shipping an unversioned `Offspring-Setup.exe` for
+> `…/releases/latest/download/Offspring-Setup.exe`. `build-release.ps1`
+> still writes that file locally, but `release.yml` uploads only
+> `Offspring-Setup-*.exe` (note the trailing dash), so no published
+> release has carried it since the pipeline took over — that URL 404s
+> today. Nothing in the app or the README depends on it. If you want it
+> back, add the unversioned names to release.yml's upload+release globs
+> — but note it makes the updater's asset match ambiguous, since
+> `Offspring-Setup.exe` and `Offspring-Setup-<ver>.exe` both satisfy
+> `is_installer_asset`.
+
+Local builds remain the way to iterate and to produce something you can
+install and test on your own machine — see
+[Iterating locally](#1-iterating-locally). They are not how you publish.
 
 ## Versioning scheme
 
@@ -66,18 +79,29 @@ parses cleanly.
 define in the four-numeric `MAJOR.MINOR.PATCH.BUILD` form Inno's
 `VersionInfoVersion=` requires. The bumper writes both.
 
-Files the bumper updates (8 of them):
+Files the bumper writes (6 directly, plus the lockfiles):
 
 - `package.json`
-- `package-lock.json` (synced via `npm install --package-lock-only`)
-- `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`
+- `src-tauri/Cargo.toml` — the `[package]` version line only
 - `src-tauri/tauri.conf.json`
-- `shell-ext/Cargo.toml` and `shell-ext/Cargo.lock`
+- `shell-ext/Cargo.toml` — likewise `[package]` only
 - `installer/offspring.iss` (`AppVersion` and `AppVersionMsix`)
+- `installer/offspring-studio.iss` (same two defines)
+
+`package-lock.json` is synced by the bumper via
+`npm install --package-lock-only`. The two `Cargo.lock` files pick the
+new version up on the next `cargo build`, not from the bumper — so a
+bump-only commit leaves them stale until you build. `release.yml` builds
+before packaging, so a tagged release is always consistent.
+
+`installer/msix/AppxManifest.xml` is **not** in this list: it's a
+template whose `__VERSION__` placeholder is substituted at pack time by
+`build-msix.ps1`, from the four-numeric version `build-release.ps1`
+derives.
 
 ## Step-by-step release
 
-### 1. Iterate locally
+### 1. Iterating locally
 
 ```powershell
 pwsh tools\build-release.ps1 -SkipInstall
@@ -85,7 +109,7 @@ pwsh tools\build-release.ps1 -SkipInstall
 
 Each invocation:
 
-1. Bumps the build counter (`0.4.3` → `0.4.3-b0001` → `0.4.3-b0002`).
+1. Bumps the build counter (`0.5.1` → `0.5.1-b0001` → `0.5.1-b0002`).
 2. Runs `npm run tauri build`.
 3. Builds the shell-extension DLL.
 4. Builds and signs **three** sparse MSIX packages (`OffspringShellExt.msix`,
@@ -95,32 +119,132 @@ Each invocation:
    trust, used by the modern-menu integration.
 5. Compiles the Inno Setup installer (bundles all three MSIX + the
    shared `.cer` + the shell-ext DLL + `offspring.exe`).
+6. Rebuilds the app with `--features studio` into `target-studio/`.
+7. Compiles the Studio installer from `offspring-studio.iss`.
 
-Output: `installer\dist\Offspring-Setup-0.4.3-bNNNN.exe`. Install it
-and test. Repeat as needed. `-SkipInstall` skips `npm ci` to make
-repeat builds fast — only re-run without it when `package.json`
-dependencies actually change.
+Output: `installer\dist\Offspring-Setup-0.5.1-bNNNN.exe` and its Studio
+sibling. Install and test. Repeat as needed. `-SkipInstall` skips
+`npm ci` to make repeat builds fast — only re-run without it when
+`package.json` dependencies actually change.
+
+This is Windows-only: there is no local script that produces the macOS
+`.dmg`. To test a Mac build, either run
+
+```sh
+npm run tauri build -- --config src-tauri/tauri.macos.conf.json \
+  --target universal-apple-darwin
+```
+
+on a Mac yourself, or trigger `release.yml` via **workflow_dispatch** on
+the ref you want and download the `macos-installer` artifact from the
+run. (Note `release.yml`'s `push` trigger only covers `main` and `v*`
+tags — pushing a feature branch won't build a `.dmg` on its own.)
 
 ### 2. Cut the release
 
+Set the version and commit it. This is a version bump only — you don't
+need to run a local build to publish.
+
 ```powershell
-pwsh tools\build-release.ps1 -Version 0.4.4
+pwsh tools\bump-version.ps1 -Set 0.5.2   # explicit (preferred)
+# OR: pwsh tools\bump-version.ps1 -Release   # auto-bump the patch number
 ```
 
-Same five steps, but with the version finalised. Use `-Version X.Y.Z`
-explicitly for clarity; `-Release` (auto patch-bump) also works for
-trivial follow-ups.
+```powershell
+git add -A
+git commit -m "v0.5.2: <one-liner describing user-visible change>"
+git tag -a v0.5.2 -m "v0.5.2`n`n<short release notes inside the annotation>"
+git push origin main
+git push origin v0.5.2
+```
 
-The unversioned `Offspring-Setup.exe` symlink is refreshed because
-this is the build we'll actually publish.
+The commit will include all the version-file bumps the bumper made. The
+tag format is `vX.Y.Z` — the in-app updater's tag filter
+(`is_plausible_tag` in [updates.rs](src-tauri/src/updates.rs)) expects
+that exact shape. Use **annotated** tags (`-a`), never lightweight ones.
 
-### 3. Sign the installer
+Pushing the tag is what starts the release build. A push to `main`
+without a tag builds the same artifacts and uploads them as workflow
+artifacts, but creates no release — useful for a dry run.
+
+### 3. Let CI build and sign
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) runs
+three jobs:
+
+1. **Windows** — `build-release.ps1 -NoBump -SkipInstall` produces both
+   the Standard and Studio installers, then signs both with minisign via
+   the `offspring-sign` helper.
+2. **macOS** — `tauri build --target universal-apple-darwin` produces the
+   universal `.dmg`, code-signed and notarized by Tauri using the
+   `APPLE_*` secrets, then minisign-signed like the Windows pair.
+3. **Draft release** — only on a tag push. Collects all six assets and
+   opens a **draft** release.
+
+Signing degrades gracefully: with `MINISIGN_PRIVATE_KEY` unset the
+installers ship unsigned and the build still goes green. That's
+deliberate for iteration — but an unsigned *published* release is a soft
+brick, because every existing install refuses an update whose `.minisig`
+is missing. Check the assets before publishing.
+
+### 4. Publish the draft
+
+The draft is at
+[releases](https://github.com/Second-March/offspring/releases). Before
+publishing:
+
+- Confirm all **six** assets are attached (see the table in the TL;DR).
+  A missing `.minisig` means existing installs cannot update.
+- Download and install at least the Standard `.exe` and the `.dmg` and
+  smoke-test them.
+- Verify a signature by hand:
+
+  ```powershell
+  minisign -Vm Offspring-Setup-0.5.2.exe -P RWSozxN0N0fWyF2cXP0fC+q5Hg2kb2zW/ML+e+zItvm7A8BCXNLZunjr
+  ```
+
+- Write the release notes. `generate_release_notes: true` seeds them
+  from merged PRs; edit into something a user would want to read.
+
+Then hit Publish. `check_for_updates` only ever looks at
+`/releases/latest`, and draft releases are excluded from it — so nothing
+reaches users until you click.
+
+## Signing in CI
+
+Four secrets drive minisign; six more drive Apple notarization.
+
+| Secret | Used by |
+|---|---|
+| `MINISIGN_PRIVATE_KEY` | both jobs — base64 of the `.key` file's **raw bytes** |
+| `MINISIGN_PASSWORD_B64` | both jobs — base64 of the key password |
+| `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` | macOS codesign |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | macOS notarization |
+
+Both minisign secrets are base64 rather than pasted text on purpose:
+GitHub Secrets handles multi-line values inconsistently (paste-time CR
+insertion, whitespace collapsing), and a single ASCII line makes all of
+that impossible. To (re)generate:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("installer\.minisign\offspring.key"))
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("<key password>"))
+```
+
+The signing steps log the key file's size, header line and SHA-256 after
+decoding, so you can confirm the bytes that landed on the runner match
+your local file without exposing key material.
+
+## Signing locally
+
+Only needed when you're publishing by hand (CI down, or an out-of-band
+build). The CI path above does not use this.
 
 ```powershell
 pwsh tools\sign-release.ps1
 ```
 
-Produces `installer\dist\Offspring-Setup-0.4.4.exe.minisig` next to
+Produces `installer\dist\Offspring-Setup-<ver>.exe.minisig` next to
 the installer. The script:
 
 - Looks for the private key at `installer\.minisign\offspring.key`
@@ -132,86 +256,21 @@ the installer. The script:
   re-sign and confuse later verification). If you need to re-sign,
   delete the old `.minisig` first.
 
-**Then duplicate the .minisig for the latest alias** — the
-unversioned `Offspring-Setup.exe` is a byte-identical copy of the
-versioned installer, so the same signature verifies both:
+Sanity-check before publishing:
 
 ```powershell
-Copy-Item installer\dist\Offspring-Setup-0.4.4.exe.minisig `
-          installer\dist\Offspring-Setup.exe.minisig -Force
-```
-
-Sanity-check both before publishing:
-
-```powershell
-minisign -Vm installer\dist\Offspring-Setup-0.4.4.exe `
-         -p installer\.minisign\offspring.pub
-minisign -Vm installer\dist\Offspring-Setup.exe `
+minisign -Vm installer\dist\Offspring-Setup-<ver>.exe `
          -p installer\.minisign\offspring.pub
 ```
 
-Both should say "Signature and comment signature verified". If
-either fails, **stop** — something is wrong with the build or key.
+It should say "Signature and comment signature verified". If it fails,
+**stop** — something is wrong with the build or key.
 
-### 4. Commit, tag, push
-
-```powershell
-git add -A
-git commit -m "v0.4.4: <one-liner describing user-visible change>"
-git tag -a v0.4.4 -m "v0.4.4`n`n<short release notes inside the annotation>"
-git push origin main
-git push origin v0.4.4
-```
-
-The commit will include all the version-file bumps the bumper made.
-The tag format is `vX.Y.Z` — the in-app updater's tag filter
-(`is_plausible_tag` in [updates.rs](src-tauri/src/updates.rs))
-expects that exact shape. Use **annotated** tags (`-a`), never
-lightweight tags; the annotation is the release-notes seed if you
-don't override with `gh release create --notes`.
-
-### 5. Publish on GitHub
-
-```powershell
-gh release create v0.4.4 `
-  installer\dist\Offspring-Setup-0.4.4.exe `
-  installer\dist\Offspring-Setup-0.4.4.exe.minisig `
-  installer\dist\Offspring-Setup.exe `
-  installer\dist\Offspring-Setup.exe.minisig `
-  --repo Second-March/offspring `
-  --title "Offspring 0.4.4" `
-  --notes "$(cat <<'EOF'
-## Highlights
-
-- ...
-
-## Install
-
-Download [Offspring-Setup-0.4.4.exe](https://github.com/Second-March/offspring/releases/download/v0.4.4/Offspring-Setup-0.4.4.exe).
-The installer is signed offline with minisign:
-
-```
-minisign -Vm Offspring-Setup-0.4.4.exe -P RWSozxN0N0fWyF2cXP0fC+q5Hg2kb2zW/ML+e+zItvm7A8BCXNLZunjr
-```
-EOF
-)"
-```
-
-**Four assets attached:**
-
-- `Offspring-Setup-0.4.4.exe` — the versioned installer.
-- `Offspring-Setup-0.4.4.exe.minisig` — the signature the in-app
-  updater fetches and verifies. **Without this, every existing
-  install will refuse to update.**
-- `Offspring-Setup.exe` — the unversioned forever-link asset for
-  marketing pages: `https://github.com/Second-March/offspring/releases/latest/download/Offspring-Setup.exe`.
-- `Offspring-Setup.exe.minisig` — sig for the forever-link, so the
-  marketing-site one-click download is also signature-verifiable.
-
-After publishing, sanity-check the page in a browser. Make sure all
-four files are listed. Without the versioned sidecar, the in-app
-updater on every existing install will see "signature missing →
-refuse to install" and the release will be a de facto soft brick.
+Publishing by hand then means uploading each installer alongside its
+`.minisig`, matching the six-asset table in the TL;DR. Without a
+versioned sidecar, the in-app updater on every existing install sees
+"signature missing → refuse to install" and the release is a de facto
+soft brick.
 
 ## Repo location
 
@@ -301,20 +360,28 @@ it: `winget install jedisct1.minisign` (closes & reopens the
 terminal so PATH picks up the new exe).
 
 **The in-app updater on a freshly-installed copy says "signature did
-not verify".** Either you forgot to upload the `.minisig`, or you
-re-built the installer after signing (changing its bytes invalidates
-the old signature). Re-run `pwsh tools\sign-release.ps1`, re-copy the
-.minisig to the latest alias, and re-upload all four files together.
+not verify".** Either the `.minisig` never got uploaded, or the
+installer was rebuilt after signing (changing its bytes invalidates the
+old signature). In CI this means `MINISIGN_PRIVATE_KEY` was unset when
+the release built — the signing step skips silently by design. Re-run
+the workflow with the secret in place and re-attach both files.
 
-**`gh release create` fails with a tag-not-found error.** Push the
-tag first (`git push origin vX.Y.Z`).
+**The release workflow went green but signed nothing.** Expected when
+the minisign or Apple secrets are missing: both signing paths degrade
+gracefully so unsigned iteration builds still succeed. Check the job log
+for "not set - skipping signing".
 
-**The release shows the wrong "latest" filename.** The unversioned
-`Offspring-Setup.exe` is just a copy `build-release.ps1 -Release`
-makes. Re-run that step and re-attach.
+**No release appeared after pushing.** The draft-release job only runs
+on tags (`if: startsWith(github.ref, 'refs/tags/v')`). A push to `main`
+uploads workflow artifacts instead. Also check the release is a *draft*
+— it won't appear on the public releases page until published.
 
-**`gh release create` says "repository moved".** Update the local
-remote: `git remote set-url origin https://github.com/Second-March/offspring.git`.
+**`…/releases/latest/download/Offspring-Setup.exe` 404s.** Expected; the
+unversioned forever-link is no longer published. See the note in the
+TL;DR.
+
+**Git says "repository moved".** Update the local remote:
+`git remote set-url origin https://github.com/Second-March/offspring.git`.
 The push succeeded via the redirect, but it's cleaner to use the
 canonical URL going forward.
 

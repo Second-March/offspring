@@ -303,9 +303,16 @@ export const getAppVersion = () => invoke<string>("get_app_version");
 export const downloadUpdate = (version: string, installerUrl: string) =>
   invoke<void>("download_update", { version, installerUrl });
 
-/** Launch the previously-downloaded installer silently and exit the app
- * so Inno Setup can overwrite offspring.exe. The installer re-launches
- * Offspring automatically after the swap. */
+/** Hand off to the previously-downloaded installer and exit the app so it
+ *  can replace the running binary.
+ *
+ *  Windows: runs the Inno Setup installer silently; it re-launches
+ *  Offspring automatically after the swap.
+ *  macOS: mounts the .dmg and quits — a disk image has no silent install,
+ *  and macOS won't let the copy overwrite a running Offspring.app, so the
+ *  user drags it across themselves. Nothing re-launches afterwards.
+ *
+ *  Either way this call does not return on success: the process exits. */
 export const installUpdate = (version: string) =>
   invoke<void>("install_update", { version });
 
@@ -313,8 +320,9 @@ export type UpdateDownloadEvent = {
   /** "downloading" | "done" | "error" */
   phase: string;
   percent: number | null;
-  /** On "done": absolute path to the downloaded .exe. On "error": the
-   * error message. On "downloading": a human-readable byte count. */
+  /** On "done": absolute path to the downloaded installer (.exe on
+   * Windows, .dmg on macOS). On "error": the error message. On
+   * "downloading": a human-readable byte count. */
   message: string | null;
 };
 
