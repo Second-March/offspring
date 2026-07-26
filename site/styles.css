@@ -1,0 +1,627 @@
+/* Offspring landing page.
+   Palette and type are lifted from toqe.pro so the two sites read as
+   siblings: Cream (#f9f8f3) by day, Onyx (#0c0c0e) by night, Funnel
+   Display for headings, Funnel Sans for body, Geist Mono for readouts. */
+
+:root {
+  color-scheme: light;
+  --canvas: #f9f8f3;
+  --card: #fefdfa;
+  --card-soft: #faf8f2;
+  --text: #1a1814;
+  --ink: #1a1814;
+  --muted: #6e675c;
+  --faint: #8a8276;
+  --line: #24201814;
+  --line-soft: #2420180d;
+  --line-strong: #24201830;
+  --bg2: #efece4;
+  --accent: #1a1814;
+  --accent-ink: #f9f8f3;
+  --tint: #efece4;
+  --tint-2: #e9e5da;
+  --yes: #0d8c7f;
+  --no: #8a8276;
+  --shadow: 0 1px 2px #24201810, 0 12px 32px -12px #2420181f;
+
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 0.25s;
+}
+
+:root.theme-dark {
+  color-scheme: dark;
+  --canvas: #0c0c0e;
+  --card: #1d1e23;
+  --card-soft: #24262c;
+  --text: #f1f2f5;
+  --ink: #f1f2f5;
+  --muted: #b8bbc4;
+  --faint: #797d87;
+  --line: #eceef21a;
+  --line-soft: #eceef20e;
+  --line-strong: #eceef238;
+  --bg2: #24262c;
+  --accent: #f1f2f5;
+  --accent-ink: #0c0c0e;
+  --tint: #282a31;
+  --tint-2: #2f3138;
+  --yes: #12a06d;
+  --no: #797d87;
+  --shadow: 0 1px 2px #0006, 0 16px 40px -16px #000a;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text);
+  font-family: 'Funnel Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+code {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--tint);
+  border-radius: 5px;
+  padding: 0.12em 0.4em;
+  overflow-wrap: anywhere;
+}
+
+a {
+  color: inherit;
+}
+
+h1,
+h2,
+h3 {
+  font-family: 'Funnel Display', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.ld {
+  --pad: clamp(20px, 5vw, 40px);
+  --measure: 66ch;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ---- top bar --------------------------------------------------------- */
+
+.ld-top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px var(--pad);
+  background: color-mix(in srgb, var(--canvas) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ld-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-decoration: none;
+  font-family: 'Funnel Display', sans-serif;
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+
+.ld-sigil {
+  display: block;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
+.ld-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ld-nav-link {
+  text-decoration: none;
+  color: var(--muted);
+  font-size: 14.5px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+
+.ld-nav-link:hover {
+  color: var(--text);
+  background: var(--tint);
+}
+
+.ld-top-demo {
+  text-decoration: none;
+  font-size: 14.5px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  transition: background var(--duration-fast), border-color var(--duration-fast);
+}
+
+.ld-top-demo:hover {
+  background: var(--tint);
+}
+
+.ld-theme {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--duration-fast);
+}
+
+.ld-theme:hover {
+  background: var(--tint);
+}
+
+.ld-theme-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  border: 1.6px solid var(--text);
+  background: linear-gradient(to right, var(--text) 50%, transparent 50%);
+}
+
+/* ---- shared section rhythm ------------------------------------------- */
+
+.ld-main {
+  flex: 1;
+}
+
+.ld-hero,
+.ld-heroshot,
+.ld-exhibit,
+.ld-buy,
+.ld-tail {
+  padding: 0 var(--pad);
+  margin: 0 auto;
+  max-width: 1080px;
+  text-align: center;
+}
+
+.ld-hero {
+  padding-top: clamp(56px, 11vw, 116px);
+  padding-bottom: 8px;
+}
+
+.ld-exhibit,
+.ld-buy,
+.ld-tail {
+  padding-top: clamp(64px, 9vw, 108px);
+}
+
+.ld-eyebrow {
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin: 0 0 14px;
+}
+
+.ld-hero h1 {
+  font-size: clamp(38px, 6.4vw, 68px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  margin-bottom: 22px;
+}
+
+.ld-exhibit h2,
+.ld-buy h2,
+.ld-tail h2 {
+  font-size: clamp(27px, 3.7vw, 40px);
+  margin-bottom: 16px;
+}
+
+.ld-dek {
+  font-size: clamp(17px, 1.9vw, 20.5px);
+  line-height: 1.55;
+  color: var(--muted);
+  max-width: 60ch;
+  margin: 0 auto;
+  text-wrap: pretty;
+}
+
+.ld-sub {
+  font-size: 17px;
+  line-height: 1.62;
+  color: var(--muted);
+  max-width: var(--measure);
+  margin: 0 auto 14px;
+  text-wrap: pretty;
+}
+
+.ld-sub:last-child {
+  margin-bottom: 0;
+}
+
+.ld-fine {
+  font-size: 13.5px;
+  color: var(--faint);
+  max-width: 62ch;
+  margin: 16px auto 0;
+  text-wrap: pretty;
+}
+
+/* ---- buttons --------------------------------------------------------- */
+
+.ld-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 11px;
+  justify-content: center;
+  margin-top: 30px;
+}
+
+.ld-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  font-size: 15.5px;
+  font-weight: 500;
+  padding: 12px 22px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  transition: background var(--duration-fast), transform var(--duration-fast) var(--ease-smooth-out),
+    border-color var(--duration-fast);
+}
+
+.ld-btn:hover {
+  background: var(--tint);
+  transform: translateY(-1px);
+}
+
+.ld-btn.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.ld-btn.primary:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--canvas));
+}
+
+/* ---- screenshots ----------------------------------------------------- */
+
+.ld-heroshot {
+  padding-top: clamp(36px, 6vw, 60px);
+}
+
+/* Each figure is capped at its image's natural width (+ the 10px padding
+   either side). These are real screenshots at modest pixel sizes — letting
+   them stretch to the 1080px column blew contextmenu.webp up 1.7x and it
+   went visibly soft. Crisp and smaller beats big and mushy. */
+.ld-shot {
+  margin: 0 auto;
+  max-width: 660px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.ld-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 7px;
+}
+
+.ld-shot-menu {
+  max-width: 537px;
+}
+
+.ld-shot-sm {
+  max-width: 402px;
+}
+
+.ld-exhibit .ld-shot {
+  margin-top: 34px;
+}
+
+/* ---- tiles ----------------------------------------------------------- */
+
+.ld-trio {
+  max-width: 1080px;
+  margin: 40px auto 0;
+  padding: 0 var(--pad);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+  gap: 14px;
+}
+
+.ld-tile {
+  background: var(--card-soft);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 20px 20px 22px;
+  text-align: left;
+}
+
+.ld-tile h3 {
+  font-size: 17px;
+  margin-bottom: 7px;
+}
+
+.ld-tile p {
+  margin: 0;
+  font-size: 14.8px;
+  line-height: 1.55;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+/* ---- comparison table ------------------------------------------------ */
+
+.ld-panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  margin-top: 32px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.ld-compare table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14.5px;
+  min-width: 660px;
+}
+
+.ld-compare th,
+.ld-compare td {
+  padding: 12px 14px;
+  text-align: center;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ld-compare thead th {
+  font-family: 'Funnel Display', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--card-soft);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.ld-compare thead th:first-child {
+  width: 34%;
+}
+
+.ld-compare tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ld-cmp-feat {
+  text-align: left !important;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.ld-cmp {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.ld-cmp-yes {
+  color: var(--yes);
+  font-weight: 600;
+}
+
+.ld-cmp-no {
+  color: var(--no);
+}
+
+.ld-cmp-price {
+  font-family: 'Geist Mono', monospace;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* ---- install --------------------------------------------------------- */
+
+.ld-apps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 16px;
+  margin-top: 36px;
+  text-align: left;
+}
+
+.ld-app {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px 24px 22px;
+  box-shadow: var(--shadow);
+}
+
+.ld-app h3 {
+  font-size: 19px;
+  margin-bottom: 14px;
+}
+
+.ld-steps {
+  margin: 0;
+  padding-left: 1.15em;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  font-size: 15.2px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.ld-steps::marker,
+.ld-steps li::marker {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.ld-steps strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ld-path {
+  display: block;
+  margin-top: 6px;
+  font-family: 'Geist Mono', monospace;
+  font-size: 12.6px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--tint);
+  border-radius: 7px;
+  padding: 7px 9px;
+}
+
+.ld-app-note {
+  margin: 16px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 13.6px;
+  line-height: 1.55;
+  color: var(--faint);
+  text-wrap: pretty;
+}
+
+.ld-ios {
+  margin: 26px auto 0;
+  max-width: 64ch;
+  font-size: 14.5px;
+  color: var(--faint);
+  text-wrap: pretty;
+}
+
+/* ---- faq ------------------------------------------------------------- */
+
+.ld-faq-list {
+  margin-top: 30px;
+  text-align: left;
+  max-width: 760px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ld-faq-item {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 18px 2px 20px;
+}
+
+.ld-faq-item:last-child {
+  border-bottom: 0;
+}
+
+.ld-faq-q {
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+
+.ld-faq-a p {
+  margin: 0;
+  font-size: 15.4px;
+  line-height: 1.6;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+/* ---- tail + footer --------------------------------------------------- */
+
+.ld-tail {
+  padding-bottom: clamp(64px, 9vw, 104px);
+}
+
+.ld-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding: 22px var(--pad);
+  border-top: 1px solid var(--line-soft);
+  font-size: 13.6px;
+  color: var(--faint);
+}
+
+.ld-foot-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.ld-foot a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.ld-foot a:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ---- motion ---------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 560px) {
+  .ld-nav-link {
+    display: none;
+  }
+  body {
+    font-size: 16.2px;
+  }
+}
