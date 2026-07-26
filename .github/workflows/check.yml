@@ -21,9 +21,17 @@
 
 name: Check
 
+# Triggers are deliberately non-overlapping. `push` on a branch plus
+# `pull_request` would both fire for every push to an open PR, running
+# the whole matrix twice — and Windows/macOS runner minutes bill at 2x
+# and 10x the Linux rate. So: branch work is covered by `pull_request`,
+# and `push` covers only main, which `pull_request` never sees.
+#
+# main is worth checking even though release.yml also builds it —
+# release.yml runs neither svelte-check nor cargo test.
 on:
   push:
-    branches-ignore: [main]   # main is already covered by release.yml's build
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
