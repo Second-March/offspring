@@ -1,0 +1,120 @@
+# Fast correctness gate. Separate from release.yml, which only fires on
+# main / tags and spends ~20 minutes producing installers — far too slow
+# and too late to be the thing that tells you a type broke.
+#
+# The gap this closes: nothing used to run `svelte-check` or `cargo test`
+# on a branch, so 47 frontend type errors accumulated unnoticed across
+# the 0.5.x macOS port (including a `pick_run_tool` signature that had
+# drifted to list 3 of the 8 tools the Rust side actually accepts).
+#
+# Platform coverage matters here specifically because most of this
+# codebase is `#[cfg]`-gated. A Linux-only Rust check compiles neither
+# integration/context_menu.rs (Windows registry) nor
+# integration/services_mac.rs (objc2 NSServices) — i.e. exactly the code
+# the last two releases changed. So Rust is checked on both targets.
+#
+# Deliberately NOT gated on:
+#   * `cargo fmt --check` — the tree isn't rustfmt-clean today and
+#     reformatting it is its own commit, not a drive-by.
+#   * clippy warnings — reported for visibility, but `-D warnings` would
+#     fail on pre-existing lints. Tighten once the backlog is cleared.
+
+name: Check
+
+on:
+  push:
+    branches-ignore: [main]   # main is already covered by release.yml's build
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend (svelte-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Fails the job on type errors; a11y/reactivity warnings pass.
+      - name: svelte-check
+        run: npm run check
+
+      # Catches a broken SvelteKit build (bad import, adapter misconfig)
+      # that type-checking alone wouldn't surface.
+      - name: Build frontend
+        run: npm run build
+
+  rust:
+    name: Rust (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            # shell-ext is Windows-only (COM shell extension) so it only
+            # builds in this leg of the matrix.
+            shell_ext: true
+          - os: macos-latest
+            name: macos
+            shell_ext: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+            shell-ext/target
+          key: check-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock', 'shell-ext/Cargo.lock') }}
+          restore-keys: check-${{ runner.os }}-
+
+      # `cargo check` doesn't need the SvelteKit output — tauri-build
+      # only reads frontendDist during a real bundle — so we skip the
+      # npm install entirely here and keep this job lean.
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      # The studio variant compiles out the updater, the FFmpeg
+      # downloader and the modern-menu integration behind `#[cfg(feature
+      # = "studio")]`. It has broken independently of the standard build
+      # before, so check it too.
+      - name: cargo check (studio variant)
+        if: matrix.shell_ext
+        working-directory: src-tauri
+        run: cargo check --all-targets --features studio
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: cargo clippy (informational)
+        continue-on-error: true
+        working-directory: src-tauri
+        run: cargo clippy --all-targets
+
+      - name: cargo check (shell-ext)
+        if: matrix.shell_ext
+        working-directory: shell-ext
+        run: cargo check --all-targets

@@ -42,6 +42,12 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = "Release",
+    # MSIX requires a four-part MAJOR.MINOR.BUILD.REVISION identity
+    # version — a bare semver like "0.5.1" makes MakeAppx reject the
+    # manifest. build-release.ps1 derives the four-numeric form and
+    # passes it in; validate here so a hand-run with the wrong shape
+    # fails at the parameter instead of deep inside packing.
+    [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')]
     [string]$Version       = "0.2.0.0",
     # Default to whatever's in $env:OFFSPRING_PFX_PASSWORD so secrets stay
     # out of the source tree and out of process listings. Falls back to
@@ -200,15 +206,24 @@ foreach ($v in $variants) {
     }
 
     # Substitute placeholders (Identity Name, DisplayName, Verb Id,
-    # CLSID) plus the Version regex-replace. Each variant's manifest is
-    # a string-replace over the shared template — no second template
-    # file to keep in sync.
+    # CLSID, Version). Each variant's manifest is a string-replace over
+    # the shared template — no second template file to keep in sync.
+    #
+    # Version goes through the same __VERSION__ placeholder as everything
+    # else. It used to be a regex-replace of `Version="\d+\.\d+\.\d+\.\d+"`,
+    # but that pattern is unanchored and `MinVersion="10.0.19041.0"` on the
+    # TargetDeviceFamily line ends with a matching `Version="..."` substring
+    # — so the OS floor got rewritten to the app version and MakeAppx
+    # rejected the manifest. A literal placeholder can't collide.
     $manifestStr = $templateRaw `
         -replace '__IDENTITY_NAME__', $v.Identity `
         -replace '__DISPLAY_NAME__',  $v.DisplayName `
         -replace '__VERB_ID__',       $v.VerbId `
         -replace '__CLSID__',         $v.Clsid `
-        -replace 'Version="\d+\.\d+\.\d+\.\d+"', ('Version="{0}"' -f $Version)
+        -replace '__VERSION__',       $Version
+    if ($manifestStr -match '__[A-Z_]+__') {
+        throw "Unsubstituted placeholder $($Matches[0]) left in the $($v.Name) manifest."
+    }
     $manifestDst = Join-Path $variantStage "AppxManifest.xml"
     Set-Content -Path $manifestDst -Value $manifestStr -Encoding UTF8
 

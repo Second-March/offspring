@@ -29,9 +29,9 @@
   // entry maps to a `pick_run_tool` invocation; Rust either opens a
   // dialog (Modify, Trim) or runs the encoder directly + opens the
   // progress window (the remaining five).
-  type ToolId =
-    | "grayscale" | "overlay" | "merge" | "compare"
-    | "trim" | "invert" | "make_square" | "modify";
+  // Sourced from api.ts rather than redeclared here so the picker can't
+  // offer a tool the `pick_run_tool` command doesn't accept.
+  type ToolId = api.PickTool;
   const TOOLS: { id: ToolId; label: string; hint: string }[] = [
     { id: "grayscale",   label: "Greyscale",    hint: "Convert to black and white" },
     { id: "overlay",     label: "Overlay",      hint: "Burn filename / timecode / custom text into the file" },

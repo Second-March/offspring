@@ -61,9 +61,24 @@ export const getPlatform = () => invoke<"windows" | "macos" | "linux">("get_plat
 export const pickRunPreset = (files: string[], preset_id: string) =>
   invoke<void>("pick_run_preset", { files, presetId: preset_id });
 
-/** macOS Services picker: open the chosen tool's dialog window on the pasted files.
- *  `tool` is one of: "modify" | "trim" | "compare". */
-export const pickRunTool = (files: string[], tool: "modify" | "trim" | "compare") =>
+/** macOS Services picker: run the chosen tool on the pasted files.
+ *
+ *  "modify" / "trim" open a dialog window; "compare" opens the grid
+ *  dialog for 3+ files and encodes directly for exactly 2; the rest
+ *  encode directly and open the progress window. Must stay in sync
+ *  with the `match tool.as_str()` arms in `commands.rs::pick_run_tool`
+ *  — anything else comes back as an "unknown tool" error. */
+export type PickTool =
+  | "grayscale"
+  | "overlay"
+  | "merge"
+  | "compare"
+  | "trim"
+  | "invert"
+  | "make_square"
+  | "modify";
+
+export const pickRunTool = (files: string[], tool: PickTool) =>
   invoke<void>("pick_run_tool", { files, tool });
 export const openDataFolder = () => invoke<void>("open_data_folder");
 /** Open `%LOCALAPPDATA%\Offspring` in Explorer with `debug.log`

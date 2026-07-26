@@ -15,9 +15,15 @@
   // localized instead of just showing "Preparing…" forever.
   let phase = $state<string>("mount");
 
-  // When the failure is "ffmpeg.exe not found…" we offer the user an
+  // When the failure is "<ffmpeg binary> not found…" we offer the user an
   // inline one-click download path so they don't have to hunt for the
   // Settings tab after a failed right-click conversion.
+  //
+  // The binary name is platform-dependent — `ffmpeg.exe` on Windows,
+  // `ffmpeg` on macOS (ffmpeg.rs::FFMPEG_FILENAME) — so the match has to
+  // treat the extension as optional. Matching the Windows spelling only
+  // meant this recovery path never fired on macOS.
+  const FFMPEG_MISSING_RE = /\bffmpeg(\.exe)? not found\b/i;
   let dl = $state<{
     active: boolean;
     phase: string;
@@ -26,7 +32,7 @@
     done: boolean;
   }>({ active: false, phase: "", percent: null, message: null, done: false });
   const ffmpegMissing = $derived(
-    errored && !!errorMsg && errorMsg.toLowerCase().includes("ffmpeg.exe not found"),
+    errored && !!errorMsg && FFMPEG_MISSING_RE.test(errorMsg),
   );
 
   // Grow the toast a little when we reveal the FFmpeg-missing flow so the
