@@ -202,9 +202,11 @@ if (-not (Test-Path $certPath)) {
         -NotBefore $notBefore `
         -NotAfter $notAfter `
         -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
-    $pwd = ConvertTo-SecureString -String $PfxPassword -Force -AsPlainText
-    Export-PfxCertificate -Cert $cert -FilePath $certPath -Password $pwd | Out-Null
-    Export-Certificate    -Cert $cert -FilePath $certCer                  | Out-Null
+    # Not $pwd — that's an automatic variable holding the current
+    # directory, and clobbering it breaks any later relative path.
+    $pfxPwd = ConvertTo-SecureString -String $PfxPassword -Force -AsPlainText
+    Export-PfxCertificate -Cert $cert -FilePath $certPath -Password $pfxPwd | Out-Null
+    Export-Certificate    -Cert $cert -FilePath $certCer                    | Out-Null
     Write-Host "  PFX: $certPath"
     Write-Host "  CER: $certCer"
     Write-Host ("  Valid: {0:yyyy-MM-dd} → {1:yyyy-MM-dd}" -f $notBefore, $notAfter)
@@ -213,8 +215,19 @@ if (-not (Test-Path $certPath)) {
     # Keep the public .cer in dist/ up to date in case the distribution
     # folder was wiped between builds.
     if (-not (Test-Path $certCer)) {
-        $pwd = ConvertTo-SecureString -String $PfxPassword -Force -AsPlainText
-        $pfx = Get-PfxCertificate -FilePath $certPath
+        # Load the PFX with its password EXPLICITLY. `Get-PfxCertificate
+        # -FilePath` takes no password parameter: against a protected
+        # PFX it prompts on stdin, which on a headless CI runner is an
+        # indefinite hang rather than an error — the job sits there
+        # until the six-hour timeout with no output explaining why.
+        #
+        # This branch only runs when dist/ has been wiped but the PFX
+        # survives, which never happens on a dev box (dist/ holds the
+        # .cer from the last build) and always happens on CI once the
+        # signing cert is provisioned from a secret. That's why it went
+        # unnoticed until the first pinned-cert release build.
+        $pfx = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 `
+            @($certPath, $PfxPassword)
         Export-Certificate -Cert $pfx -FilePath $certCer | Out-Null
     }
 }

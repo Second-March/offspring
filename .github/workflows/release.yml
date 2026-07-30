@@ -136,7 +136,11 @@ jobs:
 
       - name: Build Standard + Studio installers
         shell: pwsh
-        run: pwsh tools/build-release.ps1 -NoBump -SkipInstall
+        # -NonInteractive so anything that tries to prompt fails loudly
+        # instead of blocking on stdin. A cmdlet waiting for input on a
+        # runner is invisible: no output, no error, just a step that
+        # runs until the job's six-hour ceiling.
+        run: pwsh -NonInteractive -NoProfile tools/build-release.ps1 -NoBump -SkipInstall
 
       - name: Sign installers (rsign)
         # Graceful degradation on branch builds; hard failure on tags.
