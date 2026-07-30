@@ -1,6 +1,6 @@
 [package]
 name = "offspring"
-version = "0.5.1"
+version = "0.5.2"
 description = "Offspring â€” right-click convert videos/images with FFmpeg"
 authors = ["Second March"]
 edition = "2021"
@@ -24,7 +24,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 #             behaviour profile. The HTTP modules (bootstrap.rs +
 #             updates.rs) and the cert/MSIX integration paths
 #             (modern_menu.rs) are compiled out entirely - the binary
-#             literally cannot talk to gyan.dev or github.com, and
+#             literally cannot talk to github.com, and
 #             literally cannot import a certificate. Classic right-
 #             click menu still works (HKCU registry only). User
 #             obtains FFmpeg manually and points Settings at it.
@@ -57,13 +57,13 @@ clap = { version = "4", features = ["derive"] }
 dirs = "5"
 anyhow = "1"
 thiserror = "1"
-# FFmpeg bootstrap: download the LGPL essentials zip from gyan.dev and
+# FFmpeg bootstrap: download BtbN's static win64-gpl zip from GitHub and
 # unpack it under %LOCALAPPDATA%\Offspring\ffmpeg\. ureq keeps the TLS
 # stack pure-Rust (rustls) so the installer stays self-contained.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 zip  = { version = "2",  default-features = false, features = ["deflate"] }
-# Supply-chain integrity: sha2 verifies the gyan.dev FFmpeg ZIP against
-# its published SHA-256 sidecar; minisign-verify checks that the
+# Supply-chain integrity: sha2 verifies the FFmpeg ZIP against its
+# published SHA-256 manifest; minisign-verify checks that the
 # downloaded auto-update installer was signed by the offline private key
 # whose public counterpart is pinned in `updates.rs`. Both crates are
 # small and pure-Rust so they don't pull in C deps or grow the binary

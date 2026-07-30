@@ -247,7 +247,83 @@ fn register_package(msix: &Path, external_location: &Path) -> Result<()> {
         ps_escape_single(&msix.display().to_string()),
         ps_escape_single(&external_location.display().to_string())
     );
-    ps(&script).context("Add-AppxPackage")
+    ps(&script).map_err(|e| {
+        let raw = e.to_string();
+        match explain_appx_failure(&raw) {
+            Some(hint) => anyhow!("{hint}\n\nWindows reported:\n{raw}"),
+            None => anyhow!("Add-AppxPackage failed.\n\nWindows reported:\n{raw}"),
+        }
+    })
+}
+
+/// Translate the HRESULT in an `Add-AppxPackage` failure into something
+/// a user can act on, or None when we don't recognise it.
+///
+/// Every one of these is a machine-state problem rather than a bug in
+/// the package — the raw PowerShell text names the code but not the
+/// remedy, and "0x80073CFF" is not a thing anyone can be expected to
+/// look up mid-task. Matching is on the hex code (stable across Windows
+/// locales) rather than the message text, which is localised.
+#[cfg(not(feature = "studio"))]
+fn explain_appx_failure(raw: &str) -> Option<&'static str> {
+    // Sideloading blocked by policy. Common on work-managed machines
+    // (Intune / group policy) and the single most likely cause of a
+    // failure that reproduces on every retry.
+    if raw.contains("0x80073CFF") {
+        return Some(
+            "Windows is refusing to install sideloaded app packages on this PC. \
+             That's a system policy, not an Offspring setting — it's usually set \
+             by an employer's device management. Offspring still works fine from \
+             the classic right-click menu under \"Show more options\".",
+        );
+    }
+    // Untrusted / invalid signature. The cert import runs immediately
+    // before this and reported success, so reaching here means the
+    // store write didn't stick (roaming profile, cert cleanup tool) or
+    // the cert has passed its validity window.
+    if raw.contains("0x800B0109")
+        || raw.contains("0x800B0100")
+        || raw.contains("0x800B0101")
+        || raw.contains("0x80073CF0")
+    {
+        return Some(
+            "Windows doesn't trust the signature on the right-click menu package. \
+             Reinstalling Offspring re-imports the certificate and usually fixes \
+             this; if it persists, the certificate may have expired and you need a \
+             newer Offspring build.",
+        );
+    }
+    // Files in use — Explorer has the shell-extension DLL loaded.
+    if raw.contains("0x80073D02") {
+        return Some(
+            "Windows couldn't replace the package because File Explorer is still \
+             using it. Close any open File Explorer windows (or sign out and back \
+             in) and try again.",
+        );
+    }
+    // AppX deployment service unavailable. Frequently the aftermath of a
+    // "debloat"/privacy script that disabled AppXSvc or ripped out the
+    // Store components.
+    if raw.contains("0x80073D0B") || raw.contains("0x80073CF9") {
+        return Some(
+            "The Windows app-deployment service (AppXSvc) couldn't complete the \
+             install. This usually means it's disabled — some \"debloat\" or \
+             privacy-tweak scripts turn it off. Re-enabling AppXSvc, or using the \
+             classic menu under \"Show more options\", are both fine ways forward.",
+        );
+    }
+    // -ExternalLocation problems: the install directory isn't somewhere
+    // the deployment service will accept (network path, removable or
+    // synced folder).
+    if raw.contains("0x80073CFD") || raw.contains("0x80073D01") {
+        return Some(
+            "Windows wouldn't accept Offspring's install folder as the source for \
+             the package. This happens when Offspring is installed to a network \
+             drive, a removable drive, or a cloud-synced folder like OneDrive. \
+             Reinstalling to the default location fixes it.",
+        );
+    }
+    None
 }
 
 /// Import the shipped shell-extension signing cert into
@@ -320,6 +396,30 @@ fn certutil_exe() -> PathBuf {
         }
     }
     PathBuf::from("certutil.exe")
+}
+
+#[cfg(all(test, not(feature = "studio")))]
+mod tests {
+    use super::*;
+
+    /// The whole point of the mapping is that it keys off the HRESULT,
+    /// which is stable, rather than the message text, which is
+    /// localised — so a German or Japanese Windows still gets the hint.
+    #[test]
+    fn explains_known_hresults_wherever_they_appear() {
+        let raw = "powershell exited exit code 1: Add-AppxPackage : Bereitstellung \
+                   fehlgeschlagen mit HRESULT: 0x80073CFF";
+        assert!(explain_appx_failure(raw).unwrap().contains("sideloaded"));
+        assert!(explain_appx_failure("... 0x80073D02 ...")
+            .unwrap()
+            .contains("File Explorer"));
+    }
+
+    #[test]
+    fn leaves_unknown_failures_to_the_raw_text() {
+        assert!(explain_appx_failure("").is_none());
+        assert!(explain_appx_failure("some entirely novel failure").is_none());
+    }
 }
 
 /// Kill and relaunch Explorer so it re-reads the modern-menu handler

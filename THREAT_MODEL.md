@@ -13,7 +13,8 @@ a per-user Windows app that:
 
 - Spawns FFmpeg as a subprocess with file paths the user picked in
   Explorer.
-- Downloads FFmpeg from gyan.dev on first run if the user opted in.
+- Downloads FFmpeg from GitHub (BtbN/FFmpeg-Builds releases) on first
+  run if the user opted in.
 - Checks GitHub Releases for new versions and offers to download +
   install them via Inno Setup.
 - Registers itself with the Windows shell so right-clicking a file
@@ -46,31 +47,41 @@ over the network, or run as a service.
 └─────────────┬──────────────────────────┬───────────────────────┘
               │ HTTPS                    │ HTTPS
         ┌─────▼─────────┐         ┌─────▼─────────┐
-        │  gyan.dev     │         │  GitHub       │
-        │  (FFmpeg ZIP, │         │  (release     │
-        │   sidecar     │         │   metadata,   │
-        │   sha256)     │         │   installer,  │
-        │               │         │   .minisig)   │
+        │  GitHub       │         │  GitHub       │
+        │  (BtbN FFmpeg │         │  (release     │
+        │   ZIP +       │         │   metadata,   │
+        │   checksums   │         │   installer,  │
+        │   .sha256)    │         │   .minisig)   │
         └───────────────┘         └───────────────┘
 ```
 
 ## Attackers we defend against ("in scope")
 
-### A. Network attacker against gyan.dev
+### A. Network attacker against the FFmpeg download
 
-A passive or active MITM, a DNS hijacker, a poisoned cache, or a
-compromised gyan.dev mirror.
+A passive or active MITM, a DNS hijacker, or a poisoned cache sitting
+between the app and GitHub's release CDN.
 
 **Defense.** The downloaded FFmpeg ZIP is hashed during streaming and
-compared to gyan.dev's `.sha256` sidecar URL. Mismatch is a hard error;
-extraction does not run. Both URLs are HTTPS-only and ureq's default
-TLS chain validation applies.
+compared to the entry for that exact asset filename in the release's
+`checksums.sha256` manifest. A manifest that doesn't name our asset is
+a hard error rather than a fallback to some other build's hash.
+Mismatch is a hard error; extraction does not run. Both URLs are
+HTTPS-only and ureq's default TLS chain validation applies.
 
-**Residual risk.** A full compromise of gyan.dev's TLS (their cert
-private key) lets the attacker swap both files consistently. We accept
-this — pinning gyan.dev's cert across rotations would brittle the FFmpeg
-flow without a meaningful security gain (gyan.dev is the trust anchor
-either way).
+**Residual risk.** The archive and the manifest live in the same GitHub
+release, so anyone who can write to that release — or fully compromise
+GitHub's TLS — can swap both consistently. This is a real reduction in
+independence versus the pre-0.6 setup, where FFmpeg came from gyan.dev
+and only the updater trusted GitHub: GitHub is now the single trust
+anchor for both paths, so a GitHub compromise is a total compromise
+rather than a partial one. We accept it. The alternative was staying on
+a build with no dav1d, which cannot decode AV1 files that carry a
+reserved `seq_level_idx` (see `bootstrap.rs`), and gyan's dav1d-enabled
+`full` build ships as 7z only. Note that the two paths still differ in
+strength downstream: installers are additionally verified against a
+pinned minisign key we control, so a GitHub compromise cannot push a
+malicious *installer* — only a malicious FFmpeg binary.
 
 ### B. Network attacker against GitHub Releases
 
@@ -194,10 +205,11 @@ per (B).
 
 ## Key trust assumptions, summarised
 
-- **gyan.dev** is the trust anchor for the FFmpeg binary. Its TLS
-  cert + the SHA-256 sidecar together are sufficient.
-- **GitHub** is the trust anchor for release metadata, installer
-  binaries, and signature sidecars. Its TLS chain is sufficient.
+- **GitHub** is the trust anchor for the FFmpeg binary (BtbN's release
+  ZIP + its `checksums.sha256` manifest). Its TLS chain is sufficient.
+- **GitHub** is also the trust anchor for release metadata, installer
+  binaries, and signature sidecars — though installers get a second,
+  independent check against a pinned minisign key.
 - **The maintainer's offline minisign private key** is the trust
   anchor for "is this installer authentic". Loss or compromise of
   that key requires a coordinated key-rotation event that can only

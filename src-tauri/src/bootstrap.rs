@@ -1,8 +1,8 @@
 //! FFmpeg bootstrap.
 //!
-//! Downloads the latest LGPL "essentials" FFmpeg build from gyan.dev and
-//! extracts it under `%LOCALAPPDATA%\Offspring\ffmpeg\`. Runs on a
-//! background thread, emitting `ffmpeg-download` progress events.
+//! Downloads a static FFmpeg build from BtbN/FFmpeg-Builds and extracts
+//! it under `%LOCALAPPDATA%\Offspring\ffmpeg\`. Runs on a background
+//! thread, emitting `ffmpeg-download` progress events.
 //!
 //! Sole path for the FFmpeg fetch — the installer used to do this via a
 //! `download_ffmpeg.ps1` script at install time, but that was removed in
@@ -34,23 +34,50 @@ use tauri::Emitter;
 use crate::paths;
 
 // Source URLs are split per-platform because the canonical "static
-// build" provider is different on each OS. On Windows we use gyan.dev's
-// "essentials" archive (bundles ffmpeg.exe + ffprobe.exe + presets in
-// one zip). On macOS we use evermeet.cx, which ships each binary as a
+// build" provider is different on each OS. On Windows we use
+// BtbN/FFmpeg-Builds (bundles ffmpeg.exe + ffprobe.exe + presets in one
+// zip). On macOS we use evermeet.cx, which ships each binary as a
 // standalone zip and exposes a JSON `info/{tool}/release` endpoint we
 // can hit to grab the official SHA-256 — same verification strength as
 // the Windows side, just a different sidecar shape.
+//
+// The Windows build must be the `gpl` variant, not `lgpl`: libx264 and
+// libx265 are GPL-only, and every video preset in this app encodes with
+// one of them. The `lgpl` variant simply has no H.264/HEVC encoder.
+//
+// Why not gyan.dev's build, which we used through 0.5.x: its
+// "essentials" archive ships without libdav1d, leaving libaom-av1 as
+// the only AV1 decoder. libaom rejects any sequence header carrying a
+// reserved `seq_level_idx` — which real-world encoders do emit (Houdini
+// 21 writes level 7.3) — and then fails every subsequent frame with
+// "No sequence header" until the decode error rate aborts the job.
+// dav1d ignores the level field and decodes those files fine. gyan's
+// `full` build does include dav1d, but it's published as 7z only and
+// we'd need a whole 7z decoder to read it.
+///
+/// NOTHING HERE PINS A FILENAME. BtbN's `latest` release is a rolling
+/// tag: when upstream moves from n8.1 to n8.2, the old
+/// `ffmpeg-n8.1-latest-win64-gpl-8.1.zip` asset stops being published
+/// and a hardcoded URL starts 404ing for every user at once — an app
+/// that silently loses its ability to install FFmpeg until someone
+/// notices and ships a new build. So we read the release's
+/// `checksums.sha256` manifest (a stable filename) and *derive* both
+/// the asset name and its hash from it. New upstream version, same
+/// code path, no release required.
 #[cfg(all(windows, not(feature = "studio")))]
-const FFMPEG_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
-/// gyan.dev publishes a SHA-256 sidecar next to every release ZIP. The
-/// app downloads both, computes the hash of the ZIP, and refuses to
-/// extract on mismatch. Doesn't fully neutralise an attacker who can
-/// MITM gyan.dev's TLS (they could swap both files), but it does
-/// defeat partial-compromise / cache-poisoning scenarios where one
-/// URL gets tampered with and not the other, and it catches transport-
-/// or storage-level corruption.
+const FFMPEG_RELEASE_BASE: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest";
+/// BtbN publishes one combined `checksums.sha256` manifest per release
+/// covering every asset. We fetch it BEFORE downloading anything, pick
+/// our asset out of it, then verify the downloaded ZIP against the hash
+/// on that same line and refuse to extract on mismatch. Doesn't fully
+/// neutralise an attacker who can MITM GitHub's TLS (they could swap
+/// both the manifest and the ZIP), but it does defeat
+/// partial-compromise / cache-poisoning scenarios where one URL gets
+/// tampered with and not the other, and it catches transport- or
+/// storage-level corruption.
 #[cfg(all(windows, not(feature = "studio")))]
-const FFMPEG_SHA256_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256";
+const FFMPEG_SHA256_URL: &str =
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256";
 
 /// evermeet.cx info JSON endpoints. The response includes a versioned
 /// download URL and an official SHA-256 we can verify against. We hit
@@ -141,24 +168,33 @@ fn download_and_install_windows(app: &AppHandle) -> Result<PathBuf> {
     let tmp_zip = std::env::temp_dir().join(format!("ffmpeg-offspring-{uid}-{ts}.zip"));
     let tmp_extract = std::env::temp_dir().join(format!("ffmpeg-offspring-extract-{uid}-{ts}"));
 
-    // --- 1. Download ------------------------------------------------------
+    // --- 1. Resolve which build to fetch ----------------------------------
+    // The manifest comes first, before a single byte of the ~160 MB ZIP:
+    // it tells us both which asset the current release actually
+    // publishes and what that asset's hash is. Failing here costs the
+    // user a few hundred milliseconds instead of a long download that
+    // turns out to 404 or mismatch at the end.
     emit(
         app,
         DownloadEvent {
             phase: "downloading".into(),
             percent: Some(0.0),
-            message: Some("Connecting to gyan.dev…".into()),
+            message: Some("Connecting to github.com…".into()),
         },
     );
+    let (asset, expected_hash) =
+        fetch_win_asset().context("looking up the current FFmpeg build on github.com")?;
+    let url = format!("{FFMPEG_RELEASE_BASE}/{asset}");
 
+    // --- 1a. Download -----------------------------------------------------
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(20))
         .timeout_read(Duration::from_secs(120))
         .build();
     let resp = agent
-        .get(FFMPEG_URL)
+        .get(&url)
         .call()
-        .context("downloading FFmpeg")?;
+        .with_context(|| format!("downloading {asset}"))?;
 
     let total_len: Option<u64> = resp
         .header("Content-Length")
@@ -217,12 +253,10 @@ fn download_and_install_windows(app: &AppHandle) -> Result<PathBuf> {
     drop(file);
     let computed_hash = hex_lower(&hasher.finalize());
 
-    // --- 1b. Verify the SHA-256 against gyan.dev's published sidecar ---
-    // Use a fresh agent so the verify call doesn't inherit the long
-    // read timeout the download agent needed. Failing here aborts the
-    // bootstrap before we touch the extract path, so a tampered or
-    // corrupted ZIP never reaches the user's filesystem as a real
-    // ffmpeg.exe.
+    // --- 1b. Verify against the hash the manifest gave us in step 1 ---
+    // Failing here aborts the bootstrap before we touch the extract
+    // path, so a tampered or corrupted ZIP never reaches the user's
+    // filesystem as a real ffmpeg.exe.
     emit(
         app,
         DownloadEvent {
@@ -231,8 +265,6 @@ fn download_and_install_windows(app: &AppHandle) -> Result<PathBuf> {
             message: Some("Verifying checksum…".into()),
         },
     );
-    let expected_hash = fetch_expected_sha256()
-        .context("fetching FFmpeg SHA-256 sidecar from gyan.dev")?;
     if !constant_time_eq(computed_hash.as_bytes(), expected_hash.as_bytes()) {
         let _ = std::fs::remove_file(&tmp_zip);
         bail!(
@@ -258,7 +290,7 @@ fn download_and_install_windows(app: &AppHandle) -> Result<PathBuf> {
     archive.extract(&tmp_extract).context("extracting zip")?;
     drop(archive);
 
-    // gyan.dev ships a single top-level folder like "ffmpeg-N.N.N-essentials_build/"
+    // BtbN ships a single top-level folder like "ffmpeg-nN.N-latest-win64-gpl-N.N/"
     let nested = std::fs::read_dir(&tmp_extract)
         .context("listing extracted files")?
         .filter_map(|e| e.ok())
@@ -280,9 +312,17 @@ fn download_and_install_windows(app: &AppHandle) -> Result<PathBuf> {
             }
         }
     }
-    let license = nested.path().join("LICENSE");
-    if license.exists() {
-        let _ = std::fs::copy(&license, target.join("LICENSE"));
+    // BtbN names it LICENSE.txt; gyan named it LICENSE. Copy whichever
+    // is present so an install carried over from an older version isn't
+    // left with a stale license file from the previous vendor.
+    let _ = std::fs::remove_file(target.join("LICENSE"));
+    let _ = std::fs::remove_file(target.join("LICENSE.txt"));
+    for name in ["LICENSE.txt", "LICENSE"] {
+        let license = nested.path().join(name);
+        if license.exists() {
+            let _ = std::fs::copy(&license, target.join(name));
+            break;
+        }
     }
 
     // Cleanup best-effort
@@ -343,14 +383,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Pull gyan.dev's `.sha256` sidecar and extract the first 64-hex-char
-/// run we find. Sidecar format varies — sometimes a bare hash, sometimes
-/// `<hash> *<filename>` (BSD style), sometimes `<hash>  <filename>` (GNU
-/// style). All of those have the same first token, so a regex-light
-/// scan is enough. We tolerate trailing junk but reject the response if
-/// no 64-hex run is present (HTML 5xx pages, redirects, blank).
+/// Pull BtbN's combined `checksums.sha256` manifest and pick the asset
+/// we should install, returning `(filename, sha256)`.
 #[cfg(all(windows, not(feature = "studio")))]
-fn fetch_expected_sha256() -> Result<String> {
+fn fetch_win_asset() -> Result<(String, String)> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(20))
         .timeout_read(Duration::from_secs(30))
@@ -359,18 +395,95 @@ fn fetch_expected_sha256() -> Result<String> {
         .get(FFMPEG_SHA256_URL)
         .call()?
         .into_string()?;
-    let trimmed = body.trim();
-    // Find the first 64-hex run. Anchored to ASCII so multi-byte
-    // surprises in a tampered response can't slide a "valid" hash past us.
-    for word in trimmed.split_whitespace() {
-        if word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(word.to_ascii_lowercase());
+    select_win_asset(&body)
+}
+
+/// Pick the FFmpeg build to install out of a sha256sum-style manifest,
+/// returning `(filename, hash)`.
+///
+/// Lines are `<hash>` then the filename, GNU style (two spaces) or BSD
+/// style (` *`); we split on whitespace and strip a leading `*` so
+/// either shape works.
+///
+/// What we're looking for, and why:
+///   * `win64` — excludes the linux, win32 and winarm64 assets in the
+///     same manifest. ("winarm64" doesn't contain "win64", so the plain
+///     substring test is safe.)
+///   * `gpl`, not `lgpl` — libx264 and libx265 are GPL-only and every
+///     video preset in this app encodes with one of them; the `lgpl`
+///     variant has no H.264/HEVC encoder at all. ("win64-lgpl" doesn't
+///     contain "win64-gpl", so again the substring test does the right
+///     thing.)
+///   * not `-shared` — the shared build puts the codecs in separate
+///     DLLs, which survives extraction but not the way we copy only
+///     `bin/` into place.
+///
+/// Among the survivors we prefer the highest numbered release branch
+/// (`ffmpeg-n8.1-latest-win64-gpl-8.1.zip` over `…-n7.1-…`), falling
+/// back to the `master` build if BtbN ever publishes no release-branch
+/// asset. Comparing on the parsed (major, minor) rather than
+/// alphabetically matters as soon as a two-digit minor appears — "n8.9"
+/// sorts above "n8.10" as a string, and below it as a number.
+///
+/// An empty result is a hard error, never a silent fallback: a manifest
+/// with no matching asset means an HTML error page, a redirect, or an
+/// upstream reorganisation we need to look at, and installing "whatever
+/// else was in the list" would be worse than failing.
+#[cfg(all(windows, not(feature = "studio")))]
+fn select_win_asset(body: &str) -> Result<(String, String)> {
+    // (rank, name, hash) — rank orders release branches above master.
+    let mut best: Option<((u32, u32, u32), String, String)> = None;
+
+    for line in body.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(hash), Some(raw_name)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let name = raw_name.trim_start_matches('*');
+        // Anchored to ASCII so multi-byte surprises in a tampered
+        // response can't slide a "valid" hash past us.
+        if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        if !name.starts_with("ffmpeg-")
+            || !name.ends_with(".zip")
+            || !name.contains("win64-gpl")
+            || name.contains("-shared")
+        {
+            continue;
+        }
+        let rank = branch_rank(name);
+        if best.as_ref().is_none_or(|(best_rank, _, _)| rank > *best_rank) {
+            best = Some((rank, name.to_string(), hash.to_ascii_lowercase()));
         }
     }
-    Err(anyhow!(
-        "SHA-256 sidecar response did not contain a 64-hex hash: {:?}",
-        trimmed.chars().take(120).collect::<String>()
-    ))
+
+    match best {
+        Some((_, name, hash)) => Ok((name, hash)),
+        None => Err(anyhow!(
+            "no win64-gpl FFmpeg build found in the release manifest: {:?}",
+            body.trim().chars().take(120).collect::<String>()
+        )),
+    }
+}
+
+/// Rank an asset name for `select_win_asset`. `ffmpeg-nX.Y-…` yields
+/// `(1, X, Y)`; anything else (i.e. the `master` build) yields
+/// `(0, 0, 0)` so it only wins when no release branch is published.
+#[cfg(all(windows, not(feature = "studio")))]
+fn branch_rank(name: &str) -> (u32, u32, u32) {
+    let Some(rest) = name.strip_prefix("ffmpeg-n") else {
+        return (0, 0, 0);
+    };
+    // "8.1-latest-win64-gpl-8.1.zip" -> "8.1"
+    let branch = rest.split('-').next().unwrap_or("");
+    let mut nums = branch.split('.');
+    let major = nums.next().and_then(|s| s.parse().ok());
+    let minor = nums.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    match major {
+        Some(major) => (1, major, minor),
+        None => (0, 0, 0),
+    }
 }
 
 #[cfg(all(test, not(feature = "studio")))]
@@ -389,6 +502,106 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    #[cfg(windows)]
+    const A_HASH: &str = "8394b52cb5dedb8c472200685edcdf2d882163d0c6bf550e9d3db77995255afb";
+    #[cfg(windows)]
+    const B_HASH: &str = "aef0c1aaeb9bb804d3187aed95e78ff9b912dcc02199fd0af85be20575f923ae";
+
+    /// A trimmed-down copy of the real `checksums.sha256`, keeping every
+    /// asset shape that could plausibly be mistaken for the one we
+    /// want: the shared build, the LGPL build, the other architectures,
+    /// an older release branch, and the master build.
+    #[cfg(windows)]
+    fn sample_manifest() -> String {
+        format!(
+            "{B_HASH}  ffmpeg-master-latest-linux64-gpl.tar.xz\n\
+             {B_HASH}  ffmpeg-master-latest-win64-gpl.zip\n\
+             {B_HASH}  ffmpeg-master-latest-win64-lgpl.zip\n\
+             {B_HASH}  ffmpeg-master-latest-winarm64-gpl.zip\n\
+             {B_HASH}  ffmpeg-n7.1-latest-win64-gpl-7.1.zip\n\
+             {B_HASH}  ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip\n\
+             {B_HASH}  ffmpeg-n8.1-latest-win64-lgpl-8.1.zip\n\
+             {A_HASH}  ffmpeg-n8.1-latest-win64-gpl-8.1.zip\n"
+        )
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn selects_the_newest_release_branch_gpl_build() {
+        let (name, hash) = select_win_asset(&sample_manifest()).unwrap();
+        assert_eq!(name, "ffmpeg-n8.1-latest-win64-gpl-8.1.zip");
+        assert_eq!(hash, A_HASH);
+    }
+
+    /// The whole point of deriving the name instead of pinning it: when
+    /// upstream rolls the release branch forward, an unchanged build of
+    /// the app has to follow it without a code change.
+    #[test]
+    #[cfg(windows)]
+    fn follows_upstream_when_the_branch_rolls_forward() {
+        let body = format!(
+            "{B_HASH}  ffmpeg-n8.1-latest-win64-gpl-8.1.zip\n\
+             {A_HASH}  ffmpeg-n9.0-latest-win64-gpl-9.0.zip\n"
+        );
+        let (name, hash) = select_win_asset(&body).unwrap();
+        assert_eq!(name, "ffmpeg-n9.0-latest-win64-gpl-9.0.zip");
+        assert_eq!(hash, A_HASH);
+    }
+
+    /// Branch ordering is numeric, not lexical — "n8.9" must not beat
+    /// "n8.10".
+    #[test]
+    #[cfg(windows)]
+    fn orders_branches_numerically() {
+        let body = format!(
+            "{B_HASH}  ffmpeg-n8.9-latest-win64-gpl-8.9.zip\n\
+             {A_HASH}  ffmpeg-n8.10-latest-win64-gpl-8.10.zip\n"
+        );
+        let (name, _) = select_win_asset(&body).unwrap();
+        assert_eq!(name, "ffmpeg-n8.10-latest-win64-gpl-8.10.zip");
+    }
+
+    /// If upstream ever ships only the master build, take it rather
+    /// than leaving the user with no FFmpeg at all.
+    #[test]
+    #[cfg(windows)]
+    fn falls_back_to_master_when_no_release_branch_exists() {
+        let body = format!("{A_HASH}  ffmpeg-master-latest-win64-gpl.zip\n");
+        let (name, hash) = select_win_asset(&body).unwrap();
+        assert_eq!(name, "ffmpeg-master-latest-win64-gpl.zip");
+        assert_eq!(hash, A_HASH);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn accepts_bsd_star_prefix() {
+        let body = format!("{A_HASH} *ffmpeg-n8.1-latest-win64-gpl-8.1.zip\n");
+        let (name, hash) = select_win_asset(&body).unwrap();
+        assert_eq!(name, "ffmpeg-n8.1-latest-win64-gpl-8.1.zip");
+        assert_eq!(hash, A_HASH);
+    }
+
+    /// Nothing usable must fail loudly. Installing "whatever else was
+    /// in the list" would mean an LGPL build with no H.264 encoder, or
+    /// an ARM archive on an x64 machine.
+    #[test]
+    #[cfg(windows)]
+    fn rejects_manifests_with_nothing_usable() {
+        // Only variants we must never pick.
+        let body = format!(
+            "{B_HASH}  ffmpeg-n8.1-latest-win64-lgpl-8.1.zip\n\
+             {B_HASH}  ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip\n\
+             {B_HASH}  ffmpeg-master-latest-winarm64-gpl.zip\n\
+             {B_HASH}  ffmpeg-master-latest-linux64-gpl.tar.xz\n"
+        );
+        assert!(select_win_asset(&body).is_err());
+        // Right name, malformed hash.
+        assert!(select_win_asset("nothexnothex  ffmpeg-n8.1-latest-win64-gpl-8.1.zip\n").is_err());
+        // An HTML error page served with a 200, and an empty body.
+        assert!(select_win_asset("<html>404</html>").is_err());
+        assert!(select_win_asset("").is_err());
     }
 }
 

@@ -34,6 +34,35 @@ installer\msix\dist\OffspringShellExt.msix   # signed sparse package
 installer\msix\dist\OffspringShellExt.cer    # trust anchor, shipped to user
 ```
 
+## Release builds must reuse ONE certificate
+
+The `.cer` this script emits is a trust anchor that lands in every
+user's `Cert:\CurrentUser\TrustedPeople` store. That arrangement only
+works if every published release is signed by the *same* certificate —
+otherwise each version installs another anchor, and an in-place package
+update arrives signed by a certificate that didn't sign the copy already
+registered on the machine.
+
+The script generates a throwaway self-signed cert when it finds no
+`.pfx`, which is right for local iteration and wrong for a release.
+CI therefore provisions the real one from repository secrets:
+
+| Secret | Contents |
+| --- | --- |
+| `MSIX_PFX_B64` | `[Convert]::ToBase64String([IO.File]::ReadAllBytes('installer\msix\.cert\offspring-shellext.pfx'))` |
+| `MSIX_PFX_PASSWORD_B64` | base64 of the PFX export password |
+
+`release.yml` writes those to `$RUNNER_TEMP`, points
+`OFFSPRING_PFX_PATH` / `OFFSPRING_PFX_PASSWORD` at them, and **fails the
+build on a `v*` tag if they're missing**. Branch builds still fall back
+to a generated cert.
+
+Signatures are RFC3161-timestamped, which is what keeps
+already-published installers verifiable after the signing cert lapses.
+It does not extend the trust anchor itself: the shipped `.cer` still has
+an expiry, and a release built after that date can't be registered by
+anyone. Check `NotAfter` before it gets close.
+
 ## What the user sees
 
 When the user flips the modern-menu Settings toggle on, the app:

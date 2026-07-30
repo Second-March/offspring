@@ -81,19 +81,81 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      - name: Provision the MSIX signing certificate
+        # The shell-extension MSIX packages are signed with a
+        # self-signed cert whose public half ships in the installer and
+        # is imported into each user's CurrentUser\TrustedPeople store.
+        # That only holds together if EVERY release is signed by the
+        # SAME certificate.
+        #
+        # Without this step, build-msix.ps1 finds no .pfx on the runner
+        # (.cert/ is gitignored) and quietly generates a brand new
+        # self-signed cert per run, using its built-in "offspring-dev"
+        # password. Each release then ships a different trust anchor:
+        # users accumulate one cert per version in their store, and an
+        # in-place package update is signed by a certificate that isn't
+        # the one that signed the copy already registered on the machine.
+        #
+        # MSIX_PFX_B64 is `[Convert]::ToBase64String([IO.File]::ReadAllBytes('offspring-shellext.pfx'))`
+        # and MSIX_PFX_PASSWORD_B64 the base64 of the export password —
+        # same base64-everything convention as MINISIGN_PRIVATE_KEY
+        # above, for the same GitHub-Secrets whitespace reasons.
+        shell: pwsh
+        env:
+          MSIX_PFX_B64: ${{ secrets.MSIX_PFX_B64 }}
+          MSIX_PFX_PASSWORD_B64: ${{ secrets.MSIX_PFX_PASSWORD_B64 }}
+        run: |
+          $isTag = "${{ github.ref }}".StartsWith("refs/tags/v")
+          if ([string]::IsNullOrEmpty($env:MSIX_PFX_B64)) {
+            if ($isTag) {
+              # Hard failure on tag builds only. A release built with a
+              # throwaway cert looks fine in testing and misbehaves on
+              # real machines months later, so it must never be
+              # publishable by accident. Branch builds still go green.
+              throw "MSIX_PFX_B64 is not configured. A tagged release must be signed with the pinned shell-extension certificate — see installer/msix/README.md."
+            }
+            Write-Host "MSIX_PFX_B64 not set - build-msix.ps1 will generate a throwaway dev cert (fine for a branch build)." -ForegroundColor Yellow
+            exit 0
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "offspring-shellext.pfx"
+          [System.IO.File]::WriteAllBytes(
+            $pfxPath, [Convert]::FromBase64String($env:MSIX_PFX_B64)
+          )
+          # Surfaced to the following steps; the cert never touches the
+          # workspace, and RUNNER_TEMP is wiped when the job ends.
+          "OFFSPRING_PFX_PATH=$pfxPath" >> $env:GITHUB_ENV
+          $pw = [System.Text.Encoding]::UTF8.GetString(
+            [Convert]::FromBase64String($env:MSIX_PFX_PASSWORD_B64)
+          )
+          "OFFSPRING_PFX_PASSWORD=$pw" >> $env:GITHUB_ENV
+          # Thumbprint only — identifies WHICH cert signed the release
+          # without revealing key material, so a mismatch between what
+          # users trust and what CI signed is diagnosable from the log.
+          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 @($pfxPath, $pw)
+          Write-Host "MSIX signing cert: $($cert.Subject) thumbprint $($cert.Thumbprint) valid to $($cert.NotAfter)"
+
       - name: Build Standard + Studio installers
         shell: pwsh
         run: pwsh tools/build-release.ps1 -NoBump -SkipInstall
 
       - name: Sign installers (rsign)
-        # Graceful degradation: skip silently when the minisign secret
-        # isn't configured. Lets unsigned iteration builds succeed.
+        # Graceful degradation on branch builds; hard failure on tags.
+        #
+        # The in-app updater REQUIRES a `<installer>.exe.minisig` asset:
+        # verify_installer_signature fetches the sidecar and refuses the
+        # installer outright if it 404s. So publishing a release whose
+        # sign step silently skipped doesn't ship an "unsigned but
+        # working" update — it ships an update that every existing user
+        # downloads and then can't install.
         shell: pwsh
         env:
           MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
           MINISIGN_PASSWORD_B64: ${{ secrets.MINISIGN_PASSWORD_B64 }}
         run: |
           if ([string]::IsNullOrEmpty($env:MINISIGN_PRIVATE_KEY)) {
+            if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+              throw "MINISIGN_PRIVATE_KEY is not configured. A tagged release must ship .minisig sidecars or the in-app updater will reject it for every existing user."
+            }
             Write-Host "MINISIGN_PRIVATE_KEY not set - skipping signing." -ForegroundColor Yellow
             exit 0
           }

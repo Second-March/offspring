@@ -19,6 +19,17 @@ pub struct FfmpegStatus {
     /// instead of a generic "not found" — important when the user has
     /// an explicit override that turns out to be invalid.
     pub error: Option<String>,
+    /// True when the resolved binary is the copy Offspring downloaded
+    /// and manages itself. Only then can "Update FFmpeg" actually
+    /// change what runs — with a custom path or a PATH pickup, a
+    /// re-download would land somewhere that resolution never reaches,
+    /// so the UI has to tell the user to update their own build instead.
+    pub managed: bool,
+    /// False when the resolved build has no dav1d decoder — i.e. the
+    /// gyan.dev build Offspring installed through 0.5.x, which can't
+    /// decode AV1 files that carry a reserved level. Drives the
+    /// "your FFmpeg is out of date" prompt in Settings.
+    pub has_dav1d: bool,
 }
 
 #[tauri::command]
@@ -101,15 +112,27 @@ pub fn get_platform() -> &'static str {
 pub fn ffmpeg_status() -> FfmpegStatus {
     let s = presets::load_settings().unwrap_or_default();
     match ffmpeg::resolve_ffmpeg(&s) {
-        Ok(p) => FfmpegStatus {
-            found: true,
-            path: Some(p.display().to_string()),
-            error: None,
-        },
+        Ok(p) => {
+            let managed = paths::ffmpeg_managed_path()
+                .map(|m| m == p)
+                .unwrap_or(false);
+            FfmpegStatus {
+                found: true,
+                has_dav1d: ffmpeg::supports_dav1d(&p),
+                path: Some(p.display().to_string()),
+                error: None,
+                managed,
+            }
+        }
         Err(e) => FfmpegStatus {
             found: false,
             path: None,
             error: Some(e.to_string()),
+            managed: false,
+            // Meaningless when nothing resolved; `true` keeps the
+            // "out of date" prompt from firing alongside the
+            // "not found" one.
+            has_dav1d: true,
         },
     }
 }
@@ -174,20 +197,36 @@ pub fn restart_explorer() -> Result<(), String> {
 /// setting calls for. No admin rights — everything is user-scope.
 /// The frontend should call `restart_explorer` afterwards (gated on
 /// the usual confirm dialog) so the entries appear immediately.
+///
+/// ORDER MATTERS: register first, persist second. `modern_menu_enabled`
+/// used to be written to disk *before* the Add-AppxPackage attempt, so a
+/// machine where registration fails (sideloading disabled by policy,
+/// AppXSvc broken, non-default install location) was left with the flag
+/// stuck on. The next `sync_all` — triggered by something as ordinary as
+/// saving a preset — would then take the modern branch, run
+/// `context_menu::cleanup()`, fail again on the MSIX, and leave the user
+/// with NO right-click menu at all instead of the working classic one.
+/// Persisting only after `sync` returns Ok makes a failed setup a no-op:
+/// the classic menu the user already has keeps working.
 #[cfg(windows)]
 #[tauri::command]
 pub fn setup_modern_menu() -> Result<(), String> {
     integration::modern_menu::trust_cert_user_scope().map_err(|e| e.to_string())?;
     let presets_list = presets::load_presets().unwrap_or_default();
     let mut settings = presets::load_settings().unwrap_or_default();
-    // Force-enable the modern-menu setting so the next save_settings or
-    // sync call won't immediately tear down what we just registered.
-    // Persisting it here means a restart picks up the right state too.
-    if settings.modern_menu_enabled != Some(true) {
-        settings.modern_menu_enabled = Some(true);
-        let _ = presets::save_settings(&settings);
-    }
-    integration::modern_menu::sync(&presets_list, &settings).map_err(|e| e.to_string())
+    // Register against a modern-menu-enabled *view* of the settings
+    // without committing it. `sync` only reads the split-layout field
+    // today, but setting the flag here keeps the value we register
+    // against identical to the one we're about to persist.
+    settings.modern_menu_enabled = Some(true);
+    integration::modern_menu::sync(&presets_list, &settings).map_err(|e| e.to_string())?;
+    // Registration succeeded. Now it's safe to commit the flag, and to
+    // drop the classic submenu that would otherwise sit under "Show more
+    // options" duplicating the new top-level entry — the same invariant
+    // `integration::sync_all` maintains.
+    presets::save_settings(&settings).map_err(|e| e.to_string())?;
+    let _ = integration::context_menu::cleanup();
+    Ok(())
 }
 
 /// macOS stub for setup_modern_menu. Same reasoning as

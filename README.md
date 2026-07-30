@@ -58,11 +58,11 @@ Grab the latest installer from the
   **System Settings → Keyboard → Keyboard Shortcuts → Services →
   Files and Folders** and tick **Offspring…**.
 
-On first launch, Offspring downloads a small FFmpeg build into the
-per-user data folder if one isn't already on `PATH` — gyan.dev's LGPL
-essentials build on Windows (~80 MB to
-`%LOCALAPPDATA%\Offspring\ffmpeg\`), evermeet.cx's universal static
-build on macOS (to `~/Library/Application Support/Offspring/ffmpeg/`).
+On first launch, Offspring downloads an FFmpeg build into the per-user
+data folder if one isn't already on `PATH` — BtbN's static GPL build on
+Windows (~160 MB to `%LOCALAPPDATA%\Offspring\ffmpeg\`), evermeet.cx's
+universal static build on macOS (to
+`~/Library/Application Support/Offspring/ffmpeg/`).
 You can also point the app at a pre-existing FFmpeg install from the
 Settings tab (e.g. `/opt/homebrew/bin/ffmpeg` for a Homebrew install).
 
@@ -103,8 +103,8 @@ is explicitly user-initiated:
   for updates*.
 - **Installer download** when you click *Download* in the update
   banner that follows.
-- **gyan.dev FFmpeg download** when you click *Download FFmpeg* on
-  first run (or any time later if you uninstall FFmpeg).
+- **FFmpeg download** when you click *Download FFmpeg* on first run (or
+  any time later if you uninstall FFmpeg).
 
 Full inventory in
 [SECURITY.md → Privacy / network connections](./SECURITY.md#privacy--network-connections).

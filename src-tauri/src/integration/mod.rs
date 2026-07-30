@@ -61,7 +61,22 @@ pub fn sync_all(presets: &[Preset], settings: &Settings) -> Result<()> {
     // only installed when modern is off.
     if settings.modern_menu_enabled.unwrap_or(false) {
         context_menu::cleanup()?;
-        modern_menu::sync(presets, settings)?;
+        // Self-heal: if the MSIX won't register — sideloading disabled
+        // by policy, AppXSvc turned off, an install location the
+        // deployment service rejects — put the classic menu back before
+        // reporting the failure. Without this the user is left with NO
+        // right-click menu at all: we removed the working one a line
+        // ago, and the replacement never arrived.
+        //
+        // This runs on every launch path that syncs (including the
+        // installer's `first-run`), so it also repairs machines whose
+        // stored `modern_menu_enabled` got stuck on by the pre-0.5.2
+        // "Reinstall modern menu" button, which persisted the flag
+        // before it knew whether registration had worked.
+        if let Err(e) = modern_menu::sync(presets, settings) {
+            let _ = context_menu::sync(presets, settings);
+            return Err(e);
+        }
     } else {
         modern_menu::cleanup()?;
         context_menu::sync(presets, settings)?;

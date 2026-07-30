@@ -162,6 +162,37 @@ const FFPROBE_FILENAME: &str = "ffprobe.exe";
 #[cfg(not(windows))]
 const FFPROBE_FILENAME: &str = "ffprobe";
 
+/// True iff `ffmpeg` was built with the dav1d AV1 decoder.
+///
+/// Offspring shipped a gyan.dev "essentials" build through 0.5.x, whose
+/// only AV1 decoder is libaom — and libaom hard-rejects any sequence
+/// header carrying a reserved `seq_level_idx`, which real exporters do
+/// emit (see `diagnose_stderr`). Those installs keep working forever
+/// because the bootstrap only downloads when FFmpeg is *missing*, so we
+/// need a way to spot an affected copy and offer the user an upgrade
+/// rather than waiting for them to hit a file that won't decode.
+///
+/// Reads the `configuration:` line from `ffmpeg -version`. On any
+/// failure (binary missing, not executable, unexpected output) we
+/// return true — "assume fine" — because this only drives an advisory
+/// prompt, and nagging someone whose FFmpeg we simply couldn't probe is
+/// worse than staying quiet.
+pub fn supports_dav1d(ffmpeg: &Path) -> bool {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-hide_banner").arg("-version");
+    hide_console(&mut cmd);
+    match cmd.output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            // Match the configure flag rather than the decoder list:
+            // `-version` is one cheap invocation, where `-decoders` is
+            // a second one that prints hundreds of lines.
+            !text.contains("configuration:") || text.contains("--enable-libdav1d")
+        }
+        Err(_) => true,
+    }
+}
+
 /// Resolve which ffmpeg binary to invoke for this encode session.
 ///
 /// Order of precedence:
@@ -1369,9 +1400,52 @@ fn run_with_progress(
         } else {
             tail
         };
+        // Scan the *whole* stderr for a known failure signature, not
+        // just the tail — the line that explains the failure is often
+        // the first one ffmpeg printed, long scrolled past by the time
+        // it gives up.
+        if let Some(hint) = diagnose_stderr(&stderr_lines) {
+            bail!("{hint}\n\nffmpeg exited with status {status}\n--- last stderr lines ---\n{summary}");
+        }
         bail!("ffmpeg exited with status {status}\n--- last stderr lines ---\n{summary}");
     }
     Ok(())
+}
+
+/// Translate a known ffmpeg stderr signature into a plain-English
+/// explanation, or None when we don't recognise the failure. Purely
+/// additive — the raw stderr tail is still shown either way, so a
+/// missed case just means the user sees what they saw before.
+fn diagnose_stderr(lines: &[String]) -> Option<String> {
+    // libaom-av1 refuses any AV1 sequence header whose `seq_level_idx`
+    // is one of the spec's reserved values, and without a sequence
+    // header every following frame fails too — so the run dies with a
+    // wall of "No sequence header" whose actual cause has long scrolled
+    // away. Houdini 21 is a known emitter of the reserved level 7.3.
+    // dav1d ignores the level field entirely, so any FFmpeg build with
+    // libdav1d decodes these files fine.
+    if lines
+        .iter()
+        .any(|l| l.contains("seq_level_idx") && l.contains("not yet defined"))
+    {
+        // Studio has no in-app downloader (bootstrap.rs is compiled
+        // out), so pointing it at "Settings → Download FFmpeg" would
+        // name a button that doesn't exist in that build.
+        #[cfg(feature = "studio")]
+        let remedy = "Fix: install an FFmpeg build that includes the dav1d decoder \
+                      (any recent win64-gpl build has it) and point Settings at it — \
+                      dav1d ignores the level field.";
+        #[cfg(not(feature = "studio"))]
+        let remedy = "Fix: update FFmpeg via Settings → Download FFmpeg — current builds \
+                      decode it with dav1d, which ignores the level.";
+        return Some(format!(
+            "This file is AV1 with a level number that isn't defined in the AV1 spec \
+             (some exporters, notably Houdini 21, write one). The libaom decoder rejects \
+             it outright, so no frames could be read.\n\
+             {remedy} Failing that, re-export the source as H.264."
+        ));
+    }
+    None
 }
 
 /// `run_with_progress` plus best-effort cleanup of `out` on any error.
@@ -4104,3 +4178,37 @@ fn encode_compare_images(
     Ok(out)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The signature line is the *first* thing ffmpeg prints in this
+    /// failure, and the run then emits hundreds of "No sequence header"
+    /// lines before giving up — so a scan limited to the stderr tail
+    /// we show the user would never see it.
+    #[test]
+    fn diagnoses_reserved_av1_level_from_the_head_of_stderr() {
+        let mut lines = vec![
+            "[libaom-av1 @ 0x1] Failed to decode frame: Bitstream not supported by this decoder"
+                .to_string(),
+            "[libaom-av1 @ 0x1]   Additional information: Value 23 of seq_level_idx[0] is not yet defined"
+                .to_string(),
+        ];
+        lines.extend(
+            std::iter::repeat_n("[libaom-av1 @ 0x1] Corrupt frame detected".to_string(), 200),
+        );
+        let hint = diagnose_stderr(&lines).expect("should recognise the reserved-level failure");
+        assert!(hint.contains("AV1"));
+    }
+
+    #[test]
+    fn leaves_unrecognised_failures_alone() {
+        assert!(diagnose_stderr(&[]).is_none());
+        assert!(diagnose_stderr(&[
+            "[AVFilterGraph] No such filter: 'bogus'".to_string(),
+            "Error initializing complex filters.".to_string(),
+        ])
+        .is_none());
+    }
+}

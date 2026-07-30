@@ -2,7 +2,7 @@
 ; Cert-free, no-outbound-network variant of Offspring for users /
 ; admins who want the strictest behaviour profile. The Rust side is
 ; compiled with --features studio: the binary literally cannot fetch
-; FFmpeg from gyan.dev, cannot reach github.com for updates, and
+; FFmpeg, cannot reach github.com for updates, and
 ; cannot import certificates. Classic right-click menu only.
 ;
 ; Expected layout before compiling:
@@ -13,8 +13,8 @@
 ; for the studio cargo build pass.
 
 #define AppName      "Offspring Studio"
-#define AppVersion   "0.5.1"
-#define AppVersionMsix "0.5.1.0"
+#define AppVersion   "0.5.2"
+#define AppVersionMsix "0.5.2.0"
 #define AppPublisher "Second March"
 #define AppExeName   "offspring-studio.exe"
 ; Distinct AppId from the standard build so the two installs don't

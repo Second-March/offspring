@@ -42,8 +42,8 @@ body:
       description: |
         Settings tab → FFmpeg block shows the path; the version is in the
         first line of `ffmpeg -version`. If you used Offspring's bundled
-        download, just say "bundled essentials".
-      placeholder: e.g. bundled essentials / 7.1 / system-installed
+        download, just say "bundled".
+      placeholder: e.g. bundled / 8.1 / system-installed
     validations:
       required: false
 

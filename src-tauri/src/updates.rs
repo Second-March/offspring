@@ -706,6 +706,24 @@ mod tests {
         assert!(is_newer("0.3.0-rc1", "0.2.0"));
     }
 
+    /// A `-bNNNN` local build counter is INVISIBLE here: `parts` stops
+    /// at the first non-digit, so "0.5.1-b0001" and "0.5.1" compare
+    /// equal and no installed user is ever offered the update.
+    ///
+    /// That's the intended reading of the counter — it marks an
+    /// iteration build, and `build-release.ps1` only publishes when the
+    /// version has no suffix (`$isRelease`). This test exists so the
+    /// consequence is written down: publishing a release tagged
+    /// `v0.5.1-b0001` would go out to a silent audience of nobody.
+    /// Cut releases with `bump-version.ps1 -Release`, which turns
+    /// 0.5.1-b0001 into 0.5.2.
+    #[test]
+    fn build_counter_suffix_is_not_an_upgrade() {
+        assert!(!is_newer("0.5.1-b0001", "0.5.1"));
+        assert!(is_newer("0.5.2", "0.5.1"));
+        assert!(is_newer("0.5.2", "0.5.1-b0001"));
+    }
+
     #[test]
     fn plausible_tag_accepts_release_shapes() {
         assert!(is_plausible_tag("0.3.42"));

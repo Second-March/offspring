@@ -129,6 +129,45 @@ foreach ($t in @($makeAppx, $signTool)) {
     if (-not (Test-Path $t)) { throw "Missing SDK tool: $t" }
 }
 
+# -- signing -----------------------------------------------------------
+# RFC3161 timestamp servers, tried in order. Timestamping is not
+# optional cosmetics: WITHOUT it, an MSIX signature is only valid while
+# the signing certificate is, so the day the cert lapses every installer
+# already in the wild starts failing Add-AppxPackage with 0x800B0101 for
+# anyone who hasn't registered the package yet. WITH a countersignature,
+# the signature stays verifiable because Windows evaluates it against
+# the time it was signed.
+#
+# (This is not a licence to let the cert lapse — the .cer we ship also
+# has to be a valid trust anchor in the user's TrustedPeople store, so
+# the cert still needs renewing and re-releasing before it expires.
+# Timestamping is what stops ALREADY-SHIPPED installers from breaking.)
+$timestampServers = @(
+    "http://timestamp.digicert.com",
+    "http://timestamp.sectigo.com",
+    "http://timestamp.acs.microsoft.com"
+)
+
+function Invoke-SignedTimestamped {
+    param(
+        [Parameter(Mandatory)][string]$SignTool,
+        [Parameter(Mandatory)][string]$File,
+        [Parameter(Mandatory)][string]$Label
+    )
+    foreach ($ts in $script:timestampServers) {
+        & $SignTool sign /fd SHA256 /tr $ts /td SHA256 /a /f $script:certPath /p $script:PfxPassword $File
+        if ($LASTEXITCODE -eq 0) { return }
+        Write-Warning "  timestamp via $ts failed (exit $LASTEXITCODE); trying the next server..."
+    }
+    # Every server failed. Refuse to emit an un-timestamped package: it
+    # would look fine today and break silently on the cert's expiry
+    # date, which is exactly the failure mode this function exists to
+    # prevent. A transient network problem is worth failing the build
+    # over — re-running is cheap, re-releasing to fix expired
+    # signatures a year later is not.
+    throw ("SignTool failed for {0}: no timestamp server could be reached ({1})." -f $Label, ($script:timestampServers -join ", "))
+}
+
 # -- cert (create once, reuse forever) --------------------------------
 New-Item -ItemType Directory -Force -Path $certDir, $distDir, $stageDir | Out-Null
 
@@ -139,6 +178,13 @@ if (-not (Test-Path $certPath)) {
         # new self-signed dev cert at that location — that would be a
         # surprising side effect. Surface the misconfiguration loudly.
         throw "OFFSPRING_PFX_PATH is set to '$certPath' but no file exists there. Provision the PFX before running this script, or unset the env var to fall back to the dev cert."
+    }
+    # Loud on CI, because a generated cert there means the release ships
+    # a trust anchor no existing user has — see the README section on
+    # reusing one certificate. release.yml hard-fails tag builds before
+    # reaching this point; this covers any other automated caller.
+    if ($env:CI) {
+        Write-Warning "No provisioned PFX on a CI runner - generating a THROWAWAY certificate. Do not publish this build; set OFFSPRING_PFX_PATH from the MSIX_PFX_B64 secret."
     }
     Write-Host "Creating self-signed certificate (CN=Second March)..."
     # Cap the dev cert at 2 years so a leaked PFX has a hard horizon.
@@ -234,8 +280,7 @@ foreach ($v in $variants) {
     if ($LASTEXITCODE -ne 0) { throw ("MakeAppx failed for {0} ({1})" -f $v.Name, $LASTEXITCODE) }
 
     Write-Host ("Signing {0}..." -f $v.Name)
-    & $signTool sign /fd SHA256 /a /f $certPath /p $PfxPassword $msixOut
-    if ($LASTEXITCODE -ne 0) { throw ("SignTool failed for {0} ({1})" -f $v.Name, $LASTEXITCODE) }
+    Invoke-SignedTimestamped -SignTool $signTool -File $msixOut -Label $v.Name
 
     $builtMsix += $msixOut
 }

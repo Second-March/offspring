@@ -1720,8 +1720,8 @@
           <div class="dl-box">
             <p class="tiny muted">
               <strong>Offspring Studio</strong> doesn't download FFmpeg automatically.
-              Grab the LGPL essentials build from
-              <a href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noreferrer">gyan.dev</a>,
+              Grab a <code>win64-gpl</code> build from
+              <a href="https://github.com/BtbN/FFmpeg-Builds/releases" target="_blank" rel="noreferrer">BtbN/FFmpeg-Builds</a>,
               extract it, and point the path above at <code>ffmpeg.exe</code>.
             </p>
           </div>
@@ -1738,12 +1738,53 @@
               </p>
             {:else}
               <p class="tiny muted">
-                No FFmpeg found. Download the LGPL essentials build (~80 MB) from
-                <a href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noreferrer">gyan.dev</a>
+                No FFmpeg found. Download a static GPL build (~160 MB) from
+                <a href="https://github.com/BtbN/FFmpeg-Builds/releases" target="_blank" rel="noreferrer">BtbN/FFmpeg-Builds</a>
                 into <code>%LOCALAPPDATA%\Offspring\ffmpeg\</code>.
               </p>
             {/if}
             <button class="primary" onclick={startDownloadFfmpeg}>Download FFmpeg</button>
+            {#if dl.error}
+              <p class="tiny err">✕ {dl.error}</p>
+            {/if}
+          </div>
+        {:else if ffmpeg.found && !isStudio && !dl.active}
+          <!-- FFmpeg is present, and this build can replace it. The
+               downloader used to be reachable ONLY when FFmpeg was
+               missing, which meant everyone who installed it once kept
+               that copy forever — including the gyan.dev build shipped
+               through 0.5.x, whose missing dav1d decoder makes some AV1
+               files unplayable. Without this branch the AV1 error hint
+               pointed at a button the affected user could not see. -->
+          <div class="dl-box">
+            {#if ffmpeg.has_dav1d === false && ffmpeg.managed}
+              <p class="tiny warn-line">
+                Your FFmpeg was installed by an older version of Offspring and
+                can't decode some AV1 files (you'd see a "no frames could be
+                read" error on those). Updating replaces it with a current
+                build.
+              </p>
+            {:else if ffmpeg.has_dav1d === false}
+              <p class="tiny warn-line">
+                The FFmpeg at the path above has no dav1d decoder, so some AV1
+                files won't decode. Offspring can't replace it because you've
+                pointed at your own build — update that build, or clear the
+                path above to use Offspring's managed copy.
+              </p>
+            {:else}
+              <p class="tiny muted">
+                Offspring manages its own FFmpeg copy. Re-download it if it
+                stops working or you want the latest build.
+              </p>
+            {/if}
+            {#if ffmpeg.managed || ffmpeg.has_dav1d !== false}
+              <button
+                class={ffmpeg.has_dav1d === false && ffmpeg.managed ? "primary" : ""}
+                onclick={startDownloadFfmpeg}
+              >
+                {ffmpeg.has_dav1d === false ? "Update FFmpeg" : "Re-download FFmpeg"}
+              </button>
+            {/if}
             {#if dl.error}
               <p class="tiny err">✕ {dl.error}</p>
             {/if}
@@ -1877,7 +1918,19 @@
                   alert("Modern menu reinstalled. Windows Explorer will restart briefly so the new entries appear.");
                   try { await api.restartExplorer(); } catch (err) { alert(String(err)); }
                 } catch (err) {
-                  alert("Reinstall failed: " + String(err));
+                  // A failed registration leaves the classic menu
+                  // untouched (setup_modern_menu only commits the
+                  // setting after Add-AppxPackage succeeds), so say so
+                  // — otherwise this reads as "the app is broken" when
+                  // the user in fact still has a working right-click
+                  // menu one click away under "Show more options".
+                  alert(
+                    "Couldn't set up the Windows 11 top-level menu.\n\n" +
+                    String(err) +
+                    "\n\nOffspring itself is fine: right-click a file and choose " +
+                    "\"Show more options\" (or press Shift+F10) to use it from the " +
+                    "classic menu."
+                  );
                 }
               }}
             >

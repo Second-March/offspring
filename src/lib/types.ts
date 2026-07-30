@@ -234,6 +234,16 @@ export interface FfmpegStatus {
    *  path was rejected ("isn't named ffmpeg.exe", "doesn't point
    *  at a file", etc.) instead of a generic "not found". */
   error?: string | null;
+  /** True when the resolved binary is the copy Offspring downloaded and
+   *  manages itself — the only case where "Update FFmpeg" changes what
+   *  actually runs. A custom path or a PATH pickup keeps winning over
+   *  anything we download, so the UI points those users at their own
+   *  build instead. */
+  managed?: boolean;
+  /** False when the resolved build has no dav1d decoder — the gyan.dev
+   *  build Offspring installed through 0.5.x. Those copies can't decode
+   *  AV1 files carrying a reserved level. */
+  has_dav1d?: boolean;
 }
 
 export interface ProgressEvent {
