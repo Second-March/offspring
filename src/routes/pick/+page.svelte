@@ -264,6 +264,7 @@
   .fmt-tag.mp4 { background: #0a84ff; }
   .fmt-tag.gif { background: #ff9f0a; color: #1c1c1e; }
   .fmt-tag.image { background: #30d158; color: #1c1c1e; }
+  .fmt-tag.prores { background: #bf5af2; }
   .name {
     flex: 1;
   }

@@ -1,4 +1,4 @@
-export type Format = "gif" | "mp4" | "image";
+export type Format = "gif" | "mp4" | "image" | "prores";
 export type Crop = "16:9" | "9:16" | "1:1" | "4:3";
 export type Dither = "bayer" | "floydsteinberg" | "sierra2" | "sierra24a" | "none";
 
@@ -7,6 +7,12 @@ export type Dither = "bayer" | "floydsteinberg" | "sierra2" | "sierra24a" | "non
  *  for ranges. The UI's quality field re-labels and re-bounds itself
  *  based on this value. */
 export type ImageCodec = "png" | "jpeg" | "webp" | "avif";
+
+/** ProRes quality tier for `format=prores`. Listed lowest → highest.
+ *  Only the 4444 tiers carry an alpha channel; the backend picks
+ *  `yuva444p10le` over `yuv444p10le` automatically when the source
+ *  actually has one. */
+export type ProResProfile = "proxy" | "lt" | "422" | "hq" | "4444" | "4444xq";
 
 export interface Preset {
   id: string;
@@ -35,6 +41,9 @@ export interface Preset {
   /** Image-format only. Strip EXIF / GPS / camera-serial metadata
    *  via ffmpeg's `-map_metadata -1`. On for shipped image presets. */
   strip_metadata?: boolean | null;
+  /** ProRes-format only. Quality tier. Null is treated as "hq"
+   *  (422 HQ) by the encoder. */
+  prores_profile?: ProResProfile | null;
   /** Desaturate the output to greyscale. Independent of format — works
    *  on both GIF and MP4. Also reachable as a standalone Tool. */
   grayscale?: boolean | null;

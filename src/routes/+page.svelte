@@ -2286,6 +2286,7 @@
   }
   .fmt-tag.gif { background: #FEF3C7; color: #92400E; }
   .fmt-tag.mp4 { background: var(--c-primary-tint); color: #0D47A1; }
+  .fmt-tag.prores { background: #EDE9FE; color: #5B21B6; }
   .preset-name {
     flex: 1;
     font-size: var(--fs-14);

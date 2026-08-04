@@ -13,6 +13,74 @@ pub enum Format {
     /// Width/height/crop/greyscale all apply; fps + audio fields are
     /// ignored.
     Image,
+    /// Apple ProRes in a QuickTime (.mov) container, written by
+    /// ffmpeg's `prores_ks`. An intermediate / mastering format: the
+    /// quality knob is `Preset.prores_profile`, not CRF, and there is
+    /// no meaningful target-size mode — a ProRes file's size is a
+    /// function of its profile and resolution, not a dial.
+    ///
+    /// The reason it exists here is alpha: the MP4 path forces
+    /// `yuv420p`, which discards the alpha channel of an RGBA render.
+    /// The 4444 profiles keep it.
+    ProRes,
+}
+
+/// ProRes quality tier. The wire values are the familiar Apple names;
+/// the numbers are what `prores_ks` wants after `-profile:v`.
+///
+/// Ordering here is lowest → highest quality, which is also the order
+/// the UI lists them in.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProResProfile {
+    Proxy,
+    Lt,
+    /// Plain "422" — the baseline 4:2:2 tier.
+    #[serde(rename = "422")]
+    Standard,
+    /// 422 HQ. The usual house intermediate.
+    Hq,
+    /// 4:4:4:4 — full chroma plus an alpha channel.
+    #[serde(rename = "4444")]
+    P4444,
+    /// 4444 XQ. Same channels as 4444 at a much higher bitrate.
+    #[serde(rename = "4444xq")]
+    P4444Xq,
+}
+
+impl ProResProfile {
+    /// Value for `prores_ks`'s `-profile:v`.
+    pub fn profile_num(&self) -> u32 {
+        match self {
+            ProResProfile::Proxy => 0,
+            ProResProfile::Lt => 1,
+            ProResProfile::Standard => 2,
+            ProResProfile::Hq => 3,
+            ProResProfile::P4444 => 4,
+            ProResProfile::P4444Xq => 5,
+        }
+    }
+
+    /// Whether this tier can carry an alpha channel. Only the 4444
+    /// profiles can; everything else is 4:2:2 with no alpha plane, so
+    /// asking for one silently produces an opaque file.
+    pub fn supports_alpha(&self) -> bool {
+        matches!(self, ProResProfile::P4444 | ProResProfile::P4444Xq)
+    }
+
+    /// Pixel format to hand the encoder. The 4:2:2 tiers have exactly
+    /// one legal choice; the 4444 tiers pick between the alpha and
+    /// no-alpha variants based on what the source actually has, so a
+    /// source without alpha doesn't pay for an empty alpha plane.
+    pub fn pix_fmt(&self, source_has_alpha: bool) -> &'static str {
+        if !self.supports_alpha() {
+            "yuv422p10le"
+        } else if source_has_alpha {
+            "yuva444p10le"
+        } else {
+            "yuv444p10le"
+        }
+    }
 }
 
 /// Image codec selector for `Format::Image`. Each codec has its own
@@ -83,6 +151,36 @@ pub enum Dither {
     None,
 }
 
+/// How the Modify tool fills in (or throws away) frames after a speed
+/// change. Never serialized — the Modify dialog picks one per encode.
+///
+/// * `Drop` — plain frame drop / duplication via the `fps` filter.
+///   Fast, and what every NLE does by default.
+/// * `Blend` — cross-fade neighbouring frames (`minterpolate` in
+///   `blend` mode). Cheap smoothing; reads as motion blur.
+/// * `Motion` — motion-compensated interpolation (`minterpolate` in
+///   `mci` mode). Genuinely synthesises in-between frames, which is
+///   what makes a slow-motion clip look smooth instead of stuttery.
+///   Very slow, and can smear on fast cuts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeedInterp {
+    Drop,
+    Blend,
+    Motion,
+}
+
+impl SpeedInterp {
+    /// Parse the wire value the frontend sends. Anything unrecognised
+    /// falls back to `Drop` — the cheapest, least surprising mode.
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "blend" => SpeedInterp::Blend,
+            "motion" => SpeedInterp::Motion,
+            _ => SpeedInterp::Drop,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Preset {
     pub id: String,
@@ -145,6 +243,13 @@ pub struct Preset {
     /// via ffmpeg's `-map_metadata -1`.
     #[serde(default)]
     pub strip_metadata: Option<bool>,
+
+    // ---- ProRes-format fields (only meaningful when format == ProRes) ----
+    /// Quality tier. `None` is treated as 422 HQ by the encoder — the
+    /// safe house default, and what a preset written before this field
+    /// existed should behave as.
+    #[serde(default)]
+    pub prores_profile: Option<ProResProfile>,
 
     /// Desaturate to greyscale. Independent of format — works on both
     /// GIF and MP4 outputs. When true, adds `format=gray` to the filter
@@ -233,6 +338,19 @@ pub struct Preset {
     pub modify_trim_start_sec: Option<f32>,
     #[serde(skip)]
     pub modify_trim_end_sec: Option<f32>,
+
+    /// Playback-speed multiplier. 1.0 (or `None`) leaves the clip
+    /// alone, 2.0 makes it play twice as fast (half the duration),
+    /// 0.5 halves the speed. Emitted as `setpts=(1/speed)*PTS` on the
+    /// video side plus an `atempo` chain on the audio side, so audio
+    /// keeps its pitch. Modify-dialog only.
+    #[serde(skip)]
+    pub modify_speed: Option<f32>,
+    /// What to do with the frames themselves once `modify_speed` has
+    /// retimed them. Ignored when the speed is absent or 1.0.
+    /// Modify-dialog only.
+    #[serde(skip)]
+    pub modify_interp: Option<SpeedInterp>,
 
     /// PNG / WebP / TIFF watermark to composite on top of the encoded
     /// video at full-clip resolution. Populated only by the Overlay

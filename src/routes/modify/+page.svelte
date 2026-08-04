@@ -83,6 +83,27 @@
   // warning + the button text changing keeps it from being a footgun.
   let overwrite = $state(false);
 
+  // ---- Speed / retime -------------------------------------------
+  // The speed field is kept as raw TEXT, not a number, so a partial
+  // entry ("0." on the way to "0.5") isn't clamped out from under the
+  // user's cursor mid-keystroke. `speed` derives the clamped numeric
+  // value the encoder actually gets, and the field normalises itself
+  // to that value on blur.
+  const SPEED_MIN = 0.1;
+  const SPEED_MAX = 10;
+  let speedText = $state("1");
+  const speed = $derived.by(() => {
+    const v = parseFloat(speedText);
+    if (!Number.isFinite(v)) return 1;
+    return clamp(v, SPEED_MIN, SPEED_MAX);
+  });
+  // How the retimed frames are produced. Only meaningful when the
+  // speed isn't 1 — the select disables itself otherwise.
+  let interp = $state<"drop" | "blend" | "motion">("drop");
+  // Images have no timeline, so speed never counts as a transform for
+  // them (the control is hidden in that case too).
+  const speedActive = $derived(!isImage && Math.abs(speed - 1) > 0.001);
+
   // When the video metadata loads, `bind:duration` populates
   // `videoDuration` from 0 to the real duration. That's our cue to
   // seed `trimEndSec` so the end handle sits at the right edge
@@ -102,6 +123,16 @@
   const trimActive = $derived(
     videoDuration > 0 &&
       (trimStartSec > 0.05 || trimEndSec < videoDuration - 0.05),
+  );
+
+  // Duration the user ends up with: the kept (post-trim) range divided
+  // by the speed multiplier. Shown next to the timeline so a clamped
+  // or mistyped speed is immediately visible.
+  const keptDurationSec = $derived(
+    trimActive ? trimEndSec - trimStartSec : videoDuration,
+  );
+  const outDurationSec = $derived(
+    speedActive && speed > 0 ? keptDurationSec / speed : keptDurationSec,
   );
 
   // Map a pointer's clientX to a timeline timestamp in seconds.
@@ -479,7 +510,7 @@
     files.length > 0 &&
       srcW > 0 &&
       srcH > 0 &&
-      (cropActive || flipH || flipV || reverse || removeAudio || rotate !== 0 || trimActive),
+      (cropActive || flipH || flipV || reverse || removeAudio || rotate !== 0 || trimActive || speedActive),
   );
 
   async function startModify() {
@@ -523,6 +554,10 @@
       // start==0 + end==0 as "no trim".
       ts: trimActive ? trimStartSec.toFixed(3) : "0",
       te: trimActive ? trimEndSec.toFixed(3) : "0",
+      // Speed multiplier + interpolation mode. "1" is the no-retime
+      // sentinel; the backend ignores `it` in that case.
+      sp: speedActive ? speed.toFixed(3) : "1",
+      it: interp,
       ow: overwrite ? "1" : "0",
     });
     await goto(`/progress/?${params.toString()}`);
@@ -664,6 +699,9 @@
         {#if trimActive}
           · trim {trimStartSec.toFixed(2)}–{trimEndSec.toFixed(2)}s
         {/if}
+        {#if speedActive}
+          · out {outDurationSec.toFixed(2)}s
+        {/if}
       </span>
     </div>
   {:else if previewMode === "frame"}
@@ -743,6 +781,32 @@
       <span>Flip vertical</span>
     </label>
     {#if !isImage}
+      <label class="toggle" title="Playback speed multiplier. 2 = twice as fast (half the duration), 0.5 = half speed. Audio is retimed to match with its pitch preserved. Range 0.1×–10×.">
+        <span class="select-label">Speed</span>
+        <input
+          class="speed-input"
+          type="number"
+          min={SPEED_MIN}
+          max={SPEED_MAX}
+          step="0.05"
+          value={speedText}
+          oninput={(e) => { speedText = (e.currentTarget as HTMLInputElement).value; }}
+          onchange={() => { speedText = String(speed); }}
+        />
+        <span>×</span>
+      </label>
+      <label
+        class="toggle"
+        class:muted={!speedActive}
+        title="How frames are produced when the clip is retimed. Drop / duplicate is instant and is what most editors do by default. Blend cross-fades neighbouring frames — cheap smoothing that reads as motion blur. Motion synthesises in-between frames with optical flow: much smoother slow-motion, but many times slower to encode and prone to smearing on fast cuts."
+      >
+        <span class="select-label">Interpolation</span>
+        <select bind:value={interp} disabled={!speedActive}>
+          <option value="drop">Drop / duplicate</option>
+          <option value="blend">Blend</option>
+          <option value="motion">Motion (slow)</option>
+        </select>
+      </label>
       <label class="toggle" title="Reverses video frames (and audio when present). Buffers all frames in memory — slow on long clips.">
         <input type="checkbox" bind:checked={reverse}>
         <span>Reverse</span>
@@ -990,6 +1054,21 @@
     border-radius: 4px;
     padding: 2px 6px;
     cursor: pointer;
+  }
+  .toggle select:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  /* Speed multiplier field — same chrome as the inline selects so the
+     row reads as one set of controls. */
+  .toggle .speed-input {
+    font: inherit;
+    color: inherit;
+    background: var(--c-surface-2, transparent);
+    border: 1px solid var(--c-border, rgba(0, 0, 0, 0.15));
+    border-radius: 4px;
+    padding: 2px 4px;
+    width: 64px;
   }
   .bottom {
     display: flex;

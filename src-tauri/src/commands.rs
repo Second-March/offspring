@@ -1258,6 +1258,8 @@ pub fn encode_modify(
     rotate: u32,
     trim_start_sec: f32,
     trim_end_sec: f32,
+    speed: f32,
+    interp: String,
     overwrite: bool,
 ) -> Result<(), String> {
     if files.is_empty() {
@@ -1291,16 +1293,34 @@ pub fn encode_modify(
         None
     };
     let trimmed = trim_start_opt.is_some() || trim_end_opt.is_some();
+    // Speed: clamp into the range the dialog offers, then decide
+    // whether it counts as a transform. A non-finite value (the
+    // frontend sending NaN through the URL) falls back to 1.0 rather
+    // than reaching `setpts` and producing a broken filter graph.
+    let speed = if speed.is_finite() {
+        speed.clamp(ffmpeg::MIN_SPEED, ffmpeg::MAX_SPEED)
+    } else {
+        1.0
+    };
+    let interp = presets::SpeedInterp::from_wire(&interp);
+    let retimed = (speed - 1.0).abs() > 0.001;
     // At least one transform must be active or we'd be doing a
     // pointless re-encode of the source. "Remove audio", any
     // non-zero rotation, and a real trim each count on their own —
     // every one is a meaningful change the user explicitly asked
     // for. Frontend disables the button in this case but
     // defense-in-depth.
-    if crop_rect.is_none() && !flip_h && !flip_v && !reverse && !remove_audio && !rotated && !trimmed
+    if crop_rect.is_none()
+        && !flip_h
+        && !flip_v
+        && !reverse
+        && !remove_audio
+        && !rotated
+        && !trimmed
+        && !retimed
     {
         return Err(
-            "Nothing to modify — pick at least one transform (crop / rotate / flip / reverse / trim / remove audio).".into(),
+            "Nothing to modify — pick at least one transform (crop / rotate / flip / reverse / trim / speed / remove audio).".into(),
         );
     }
     ffmpeg::reset_cancel();
@@ -1324,6 +1344,8 @@ pub fn encode_modify(
                 remove_audio,
                 trim_start_sec: trim_start_opt,
                 trim_end_sec: trim_end_opt,
+                speed,
+                interp,
                 overwrite,
             },
             &settings,

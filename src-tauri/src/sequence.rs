@@ -65,6 +65,22 @@ impl SequenceInfo {
         self.dir.join(fname)
     }
 
+    /// Concrete path of the first frame, i.e. the pattern with
+    /// `start_number` substituted in. ffprobe can't read a `%04d`
+    /// pattern the way ffmpeg can, so anything that needs to inspect a
+    /// sequence's actual pixels (the ProRes branch asking whether the
+    /// source has alpha) probes this file instead.
+    pub fn first_frame_path(&self) -> PathBuf {
+        let fname = format!(
+            "{prefix}{num:0width$}.{ext}",
+            prefix = self.stem_prefix,
+            num = self.start_number,
+            width = self.digits as usize,
+            ext = self.ext,
+        );
+        self.dir.join(fname)
+    }
+
     /// Stem to use when naming the output file — `render_0001.png`
     /// becomes `render` (trailing separator + digits stripped). Falls
     /// back to the prefix verbatim if it's empty or all-separator.
@@ -201,6 +217,29 @@ mod tests {
             frame_count: 10,
         };
         assert_eq!(info.output_stem(), "render");
+    }
+
+    /// ffprobe can't read a `%04d` pattern, so anything inspecting a
+    /// sequence's pixels needs the concrete first frame — zero-padded
+    /// to the same width the pattern uses.
+    #[test]
+    fn first_frame_path_reinstates_the_padding() {
+        let info = SequenceInfo {
+            dir: PathBuf::from("/tmp"),
+            stem_prefix: "shot_010.".into(),
+            digits: 4,
+            ext: "png".into(),
+            start_number: 173,
+            frame_count: 58,
+        };
+        assert_eq!(
+            info.first_frame_path(),
+            PathBuf::from("/tmp").join("shot_010.0173.png")
+        );
+        assert_eq!(
+            info.ffmpeg_input_pattern(),
+            PathBuf::from("/tmp").join("shot_010.%04d.png")
+        );
     }
 
     #[test]

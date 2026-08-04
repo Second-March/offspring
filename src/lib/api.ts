@@ -163,9 +163,16 @@ export const encodeInvert = (files: string[]) =>
 export const encodeMakeSquare = (files: string[]) =>
   invoke<void>("encode_make_square", { files });
 
-/** Modify tool: per-file crop + optional flip / reverse / overwrite.
- *  Same set of transforms applied to every file. `cropW=0` and
- *  `cropH=0` means "no crop, only the other transforms". */
+/** How frames are resampled after a Modify speed change. "drop" is
+ *  plain frame drop/duplication, "blend" cross-fades neighbours, and
+ *  "motion" runs motion-compensated interpolation (slow). */
+export type SpeedInterp = "drop" | "blend" | "motion";
+
+/** Modify tool: per-file crop + optional flip / reverse / speed /
+ *  overwrite. Same set of transforms applied to every file. `cropW=0`
+ *  and `cropH=0` means "no crop, only the other transforms".
+ *  `speed=1` means "don't retime", and `interp` is ignored in that
+ *  case. */
 export const encodeModify = (
   files: string[],
   cropX: number,
@@ -179,6 +186,8 @@ export const encodeModify = (
   rotate: number,
   trimStartSec: number,
   trimEndSec: number,
+  speed: number,
+  interp: SpeedInterp,
   overwrite: boolean,
 ) =>
   invoke<void>("encode_modify", {
@@ -194,6 +203,8 @@ export const encodeModify = (
     rotate,
     trimStartSec,
     trimEndSec,
+    speed,
+    interp,
     overwrite,
   });
 

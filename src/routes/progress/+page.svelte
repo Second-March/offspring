@@ -256,6 +256,16 @@
       // -ss / -to args entirely.
       const modifyTrimStart = Math.max(0, parseFloat(search.get("ts") ?? "0") || 0);
       const modifyTrimEnd = Math.max(0, parseFloat(search.get("te") ?? "0") || 0);
+      // Speed multiplier + interpolation mode. 1 means "no retime";
+      // the backend clamps to the same 0.1–10 range and ignores the
+      // interpolation mode when the speed is 1.
+      const speedRaw = parseFloat(search.get("sp") ?? "1");
+      const modifySpeed = Number.isFinite(speedRaw)
+        ? Math.min(10, Math.max(0.1, speedRaw))
+        : 1;
+      const interpRaw = search.get("it");
+      const modifyInterp: api.SpeedInterp =
+        interpRaw === "blend" || interpRaw === "motion" ? interpRaw : "drop";
       // Compare-grid mode — set when the /compare-grid/ dialog
       // reshapes its own webview into the progress route. URL carries
       // cols + layout; files are stashed via prepareCompareGridEncode
@@ -393,7 +403,8 @@
           modifyRemoveAudio ||
           modifyRotate !== 0 ||
           modifyTrimStart > 0 ||
-          modifyTrimEnd > 0;
+          modifyTrimEnd > 0 ||
+          Math.abs(modifySpeed - 1) > 0.001;
         if (!anyTransform) {
           errored = true;
           errorMsg = "Modify was started without any transforms. Open the Modify dialog and pick at least one.";
@@ -405,6 +416,7 @@
           modifyCropX, modifyCropY, modifyCropW, modifyCropH,
           modifyFlipH, modifyFlipV, modifyReverse, modifyRemoveAudio, modifyRotate,
           modifyTrimStart, modifyTrimEnd,
+          modifySpeed, modifyInterp,
           modifyOverwrite,
         );
       } else {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Preset, ImageCodec } from "$lib/types";
+  import type { Preset, ImageCodec, ProResProfile } from "$lib/types";
   import { getPlatform } from "$lib/api";
   let { preset }: { preset: Preset } = $props();
 
@@ -46,6 +46,7 @@
     <select bind:value={preset.format}>
       <option value="gif">GIF</option>
       <option value="mp4">MP4</option>
+      <option value="prores">ProRes (.mov)</option>
       <option value="image">Image</option>
     </select>
   </div>
@@ -109,10 +110,12 @@
       <option value="4:3">4:3</option>
     </select>
   </div>
-  {#if preset.format !== "image"}
+  {#if preset.format !== "image" && preset.format !== "prores"}
     <!-- Target-size logic is video-specific (computes bitrate or
          re-encodes at smaller widths). For images, file size is
-         driven by codec quality which is set explicitly below. -->
+         driven by codec quality which is set explicitly below.
+         ProRes has no bitrate dial at all — size falls out of the
+         profile and the resolution — so the field would be a lie. -->
     <div class="full">
       <label title="Leave blank for quality-based encoding. When set, MP4 bitrate is computed from clip duration; GIF width is iteratively scaled down until output fits.">
         Target max size (MB) — auto-adjusts quality / width
@@ -262,6 +265,40 @@
       </div>
     {/if}
   </div>
+{:else if preset.format === "prores"}
+  <h4 class="subhead">ProRes options</h4>
+  <div class="grid">
+    <div class="full">
+      <label title="Higher tiers mean bigger files, not more settings — ProRes has no bitrate or CRF dial. Only the 4444 tiers carry an alpha channel.">
+        Profile
+      </label>
+      <select
+        value={preset.prores_profile ?? "hq"}
+        onchange={(e) => {
+          preset.prores_profile = (e.currentTarget as HTMLSelectElement)
+            .value as ProResProfile;
+        }}
+      >
+        <option value="proxy">Proxy — offline / review</option>
+        <option value="lt">LT — light delivery</option>
+        <option value="422">422 — standard</option>
+        <option value="hq">422 HQ — house intermediate</option>
+        <option value="4444">4444 — full chroma + alpha</option>
+        <option value="4444xq">4444 XQ — highest bitrate + alpha</option>
+      </select>
+    </div>
+    <p class="note full">
+      {#if preset.prores_profile === "4444" || preset.prores_profile === "4444xq"}
+        Alpha is kept automatically when the source has it — an RGBA render
+        encodes as <code>yuva444p10le</code>, an opaque one as
+        <code>yuv444p10le</code> so it doesn't carry an empty alpha plane.
+      {:else}
+        4:2:2, no alpha channel. Pick a 4444 tier if the source is an RGBA
+        render and you need the matte to survive.
+      {/if}
+      Audio is written as uncompressed PCM.
+    </p>
+  </div>
 {:else}
   <h4 class="subhead">MP4 options</h4>
   <div class="grid">
@@ -356,5 +393,18 @@
     font-size: var(--fs-13, 13px);
     color: var(--c-text);
     margin: 0;
+  }
+  /* Explanatory blurb under the ProRes profile picker — the tiers
+     don't explain themselves and the alpha rule is the whole reason
+     the format exists here. */
+  .note {
+    font-size: var(--fs-12, 12px);
+    color: var(--c-text-2);
+    line-height: 1.45;
+    margin: 0;
+  }
+  .note code {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.95em;
   }
 </style>

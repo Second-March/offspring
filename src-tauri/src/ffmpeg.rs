@@ -14,6 +14,7 @@ use std::os::windows::process::CommandExt;
 use crate::paths;
 use crate::presets::{
     Crop, Dither, Format, GuidesConfig, OverlayConfig, OverlaySlotKind, Preset, Settings,
+    SpeedInterp,
 };
 use crate::sequence::SequenceInfo;
 
@@ -304,6 +305,10 @@ pub fn output_path(input: &EncodeInput, preset: &Preset) -> PathBuf {
             .as_ref()
             .map(|c| c.ext())
             .unwrap_or("png"),
+        // ProRes always lands in a QuickTime container. `.mov` is what
+        // every NLE expects; ffmpeg will happily mux ProRes into `.mkv`
+        // but half the tools that matter won't open it.
+        Format::ProRes => "mov",
     };
     let base = input
         .output_dir()
@@ -454,7 +459,80 @@ fn build_filter_chain(preset: &Preset) -> String {
         // dialog warns users.
         parts.push("reverse".to_string());
     }
+    // Modify-tool speed change. Runs LAST so the retime sees the final
+    // frame content — in particular it must come after `reverse`, which
+    // rewrites timestamps itself.
+    //
+    // `setpts` only moves timestamps around: it does not add or remove
+    // frames, so on its own a 2× speed-up would emit a 60 fps file from
+    // a 30 fps source. The follow-up filter is what puts the output back
+    // on a sane, constant frame rate, and it's where the interpolation
+    // choice lives — plain `fps=` drops/duplicates, `minterpolate`
+    // blends or motion-compensates.
+    if let Some(speed) = effective_speed(preset) {
+        parts.push(format!("setpts={:.6}*PTS", 1.0 / speed));
+        // `fps` is the source rate for Modify presets (derive_modify_
+        // preset seeds it from the probe), so retimed output lands back
+        // on the input's frame rate. 30 is a safe fallback for the rare
+        // input whose rate we couldn't read.
+        let target_fps = preset.fps.unwrap_or(30).max(1);
+        match preset.modify_interp.unwrap_or(SpeedInterp::Drop) {
+            SpeedInterp::Drop => parts.push(format!("fps={target_fps}")),
+            SpeedInterp::Blend => {
+                parts.push(format!("minterpolate=fps={target_fps}:mi_mode=blend"))
+            }
+            SpeedInterp::Motion => parts.push(format!(
+                "minterpolate=fps={target_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
+            )),
+        }
+    }
     parts.join(",")
+}
+
+/// The preset's speed multiplier, or `None` when it doesn't change
+/// speed. Clamped to the range the dialog offers so a hand-edited or
+/// malformed value can't produce a divide-by-zero (or a negative)
+/// `setpts` expression.
+fn effective_speed(preset: &Preset) -> Option<f32> {
+    let s = preset.modify_speed?;
+    if !s.is_finite() {
+        return None;
+    }
+    let s = s.clamp(MIN_SPEED, MAX_SPEED);
+    if (s - 1.0).abs() < 0.001 {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Bounds on the Modify tool's speed multiplier. The UI enforces the
+/// same numbers; these are the backstop for anything that reaches the
+/// encoder by another route.
+pub const MIN_SPEED: f32 = 0.1;
+pub const MAX_SPEED: f32 = 10.0;
+
+/// Decompose a speed multiplier into a chain of `atempo` filters.
+/// A single `atempo` instance only accepts 0.5–2.0 on the older ffmpeg
+/// builds we still support, so anything outside that range becomes
+/// repeated doublings / halvings with the remainder on the last stage.
+/// `atempo` preserves pitch, which is what you want for a retimed clip
+/// (the alternative — resampling — turns speech into chipmunks).
+fn atempo_chain(speed: f32) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut remaining = speed;
+    while remaining > 2.0 {
+        out.push("atempo=2.0".to_string());
+        remaining /= 2.0;
+    }
+    while remaining < 0.5 {
+        out.push("atempo=0.5".to_string());
+        remaining *= 2.0;
+    }
+    if (remaining - 1.0).abs() > 0.001 {
+        out.push(format!("atempo={remaining:.6}"));
+    }
+    out
 }
 
 /// Burn-in drawtext for the current frame number. Uses Windows'
@@ -799,6 +877,117 @@ pub struct ProgressEvent {
     pub message: Option<String>,
 }
 
+/// The part of a video encode command that's identical whatever the
+/// output codec is: verbosity, the Modify tool's input-seek trim pair,
+/// the input itself, and the video filter graph. Both the MP4 and the
+/// ProRes branch start here and then append their own encoder flags.
+fn video_input_cmd(
+    ffmpeg: &Path,
+    verbosity: &str,
+    input: &EncodeInput,
+    preset: &Preset,
+    filter: &str,
+) -> Command {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-v", verbosity, "-y", "-hide_banner"]);
+    // Modify-tool trim: insert `-ss <start> -to <end>` BEFORE -i so
+    // ffmpeg input-seeks and stops decoding at `end`. Much cheaper
+    // than filter-based `trim=` (which would decode the whole clip and
+    // discard frames after the fact). Only emitted when the input is a
+    // real file (sequences don't support seek the same way).
+    if matches!(input, EncodeInput::File(_)) {
+        if let Some(s) = preset.modify_trim_start_sec {
+            cmd.args(["-ss", &format!("{:.3}", s)]);
+        }
+        if let Some(e) = preset.modify_trim_end_sec {
+            cmd.args(["-to", &format!("{:.3}", e)]);
+        }
+    }
+    for a in input.input_args() {
+        cmd.arg(a);
+    }
+    // Watermark vs. simple -vf path. When the Overlay tool's watermark
+    // step is active, swap to -filter_complex so we can pull the PNG in
+    // as a second input and composite it on top of the user's normal
+    // filter chain. Otherwise the single-input -vf path is identical to
+    // what it was before.
+    if let Some(ref wm) = preset.watermark {
+        cmd.args(["-i", &wm.path]);
+        let inner = if filter.is_empty() { "null".to_string() } else { filter.to_string() };
+        let complex = format!(
+            "[1:v]scale={w}:{h}:flags=lanczos,format=rgba,colorchannelmixer=aa={op:.3}[wm];\
+             [0:v]{inner}[vid];\
+             [vid][wm]overlay=0:0[out]",
+            w = wm.clip_w,
+            h = wm.clip_h,
+            op = wm.opacity,
+            inner = inner
+        );
+        cmd.args(["-filter_complex", &complex]);
+        cmd.args(["-map", "[out]"]);
+        // Keep the main input's audio stream if present. The `?` makes
+        // the map optional, so a silent clip (no audio stream) doesn't
+        // fail the encode.
+        cmd.args(["-map", "0:a?"]);
+    } else if !filter.is_empty() {
+        cmd.args(["-vf", filter]);
+    }
+    cmd
+}
+
+/// Audio-side counterparts to the Modify tool's transforms, as an
+/// `-af` chain. Needed because `build_filter_chain` only constructs
+/// video (`-vf`) filters. No-op when there's no audio stream — ffmpeg
+/// silently skips audio filters in that case.
+///
+///   * reverse → `areverse`, so the backwards video has backwards sound.
+///   * speed   → an `atempo` chain matching the video's `setpts`, so
+///     picture and sound stay in sync.
+///
+/// Order matches the video chain: reverse, then retime.
+fn modify_audio_filters(preset: &Preset) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if preset.modify_reverse.unwrap_or(false) {
+        out.push("areverse".to_string());
+    }
+    if let Some(speed) = effective_speed(preset) {
+        out.extend(atempo_chain(speed));
+    }
+    out
+}
+
+/// Human-readable tier name for progress messages.
+fn prores_profile_label(p: crate::presets::ProResProfile) -> &'static str {
+    use crate::presets::ProResProfile as P;
+    match p {
+        P::Proxy => "Proxy",
+        P::Lt => "LT",
+        P::Standard => "422",
+        P::Hq => "422 HQ",
+        P::P4444 => "4444",
+        P::P4444Xq => "4444 XQ",
+    }
+}
+
+/// Whether the encode's source carries an alpha channel. Sequences are
+/// probed via their first concrete frame, since ffprobe can't read a
+/// `%04d` pattern. Anything we can't probe reads as "no alpha" — the
+/// encode still succeeds, it just doesn't reserve an empty plane.
+fn source_has_alpha(ffmpeg: &Path, input: &EncodeInput) -> bool {
+    let probe_target = match input {
+        EncodeInput::File(p) => p.clone(),
+        EncodeInput::Sequence { info, .. } => info.first_frame_path(),
+        // Concat inputs are a listing file, not media — probing it
+        // would tell us nothing.
+        EncodeInput::Concat { .. } => return false,
+    };
+    probe_video(ffmpeg, &probe_target)
+        .pix_fmt
+        .as_deref()
+        .map(pix_fmt_has_alpha)
+        .unwrap_or(false)
+}
+
 pub fn encode_file(
     ffmpeg: &Path,
     input: &EncodeInput,
@@ -907,51 +1096,13 @@ pub fn encode_file(
                 message: Some(stage_msg),
             });
 
-            let mut cmd = Command::new(ffmpeg);
-            cmd.args(["-v", &verbosity, "-y", "-hide_banner"]);
-            // Modify-tool trim: insert `-ss <start> -to <end>` BEFORE
-            // -i so ffmpeg input-seeks and stops decoding at `end`.
-            // Much cheaper than filter-based `trim=` (which would
-            // decode the whole clip and discard frames after the
-            // fact). Only emitted when the input is a real file
-            // (sequences don't support seek the same way).
-            if matches!(input, EncodeInput::File(_)) {
-                if let Some(s) = preset.modify_trim_start_sec {
-                    cmd.args(["-ss", &format!("{:.3}", s)]);
-                }
-                if let Some(e) = preset.modify_trim_end_sec {
-                    cmd.args(["-to", &format!("{:.3}", e)]);
-                }
-            }
-            for a in input.input_args() {
-                cmd.arg(a);
-            }
-            // Watermark vs. simple -vf path. When the Overlay tool's
-            // watermark step is active, swap to -filter_complex so we
-            // can pull the PNG in as a second input and composite it
-            // on top of the user's normal filter chain. Otherwise the
-            // single-input -vf path is identical to what it was before.
-            if let Some(ref wm) = preset.watermark {
-                cmd.args(["-i", &wm.path]);
-                let inner = if filter.is_empty() { "null".to_string() } else { filter.clone() };
-                let complex = format!(
-                    "[1:v]scale={w}:{h}:flags=lanczos,format=rgba,colorchannelmixer=aa={op:.3}[wm];\
-                     [0:v]{inner}[vid];\
-                     [vid][wm]overlay=0:0[out]",
-                    w = wm.clip_w,
-                    h = wm.clip_h,
-                    op = wm.opacity,
-                    inner = inner
-                );
-                cmd.args(["-filter_complex", &complex]);
-                cmd.args(["-map", "[out]"]);
-                // Keep the main input's audio stream if present. The `?`
-                // makes the map optional, so a silent clip (no audio
-                // stream) doesn't fail the encode.
-                cmd.args(["-map", "0:a?"]);
-            } else if !filter.is_empty() {
-                cmd.args(["-vf", &filter]);
-            }
+            // Built as a closure so the whole command can be
+            // reconstructed for a second attempt on a different encoder
+            // — `Command` isn't cloneable, and the hardware-encoder
+            // fallback below needs an identical command with only
+            // `-c:v` (and its quality flag) swapped.
+            let build_cmd = |codec: &str| {
+            let mut cmd = video_input_cmd(ffmpeg, &verbosity, input, preset, &filter);
             cmd.args(["-c:v", codec, "-preset", &preset_speed]);
             if let Some(ref br) = computed_vbr {
                 // target-size mode: cap with maxrate/bufsize so we actually fit
@@ -961,6 +1112,16 @@ pub fn encode_file(
                 cmd.args(["-b:v", br, "-maxrate", &maxrate, "-bufsize", &bufsize]);
             } else if let Some(ref br) = preset.video_bitrate {
                 cmd.args(["-b:v", br]);
+            } else if codec == "h264_nvenc" {
+                // NVENC has no `-crf` — passing one makes ffmpeg print
+                // "Codec AVOption crf ... has not been used for any
+                // stream" and silently encode at the driver's default
+                // rate control, so the preset's quality setting did
+                // nothing on the CUDA path. `-rc vbr` + `-cq` is the
+                // constant-quality equivalent, on the same 0–51 scale
+                // as CRF; `-b:v 0` removes the bitrate ceiling that
+                // would otherwise override the quality target.
+                cmd.args(["-rc", "vbr", "-cq", &crf.to_string(), "-b:v", "0"]);
             } else {
                 cmd.args(["-crf", &crf.to_string()]);
             }
@@ -973,14 +1134,9 @@ pub fn encode_file(
                 cmd.arg("-an");
             } else {
                 cmd.args(["-c:a", "aac", "-b:a", &abr]);
-                // Modify-tool reverse: also reverse the audio so the
-                // backwards video has backwards sound. Applied as a
-                // separate -af filter chain on the audio stream because
-                // build_filter_chain only constructs video (-vf) filters.
-                // No-op when there's no audio stream — ffmpeg silently
-                // skips audio filters in that case.
-                if preset.modify_reverse.unwrap_or(false) {
-                    cmd.args(["-af", "areverse"]);
+                let afilters = modify_audio_filters(preset);
+                if !afilters.is_empty() {
+                    cmd.args(["-af", &afilters.join(",")]);
                 }
             }
             // `-pix_fmt yuv420p` is load-bearing for Windows Explorer's
@@ -997,7 +1153,116 @@ pub fn encode_file(
                 cmd.arg("-an");
             }
             cmd.args(["-progress", "pipe:1"]).arg(&out);
-            run_with_progress_cleanup(cmd, duration_s, file_index, total_files, &input_display, "encode", &out, &mut on_progress)?;
+            cmd
+            };
+
+            let attempt = run_with_progress_cleanup(
+                build_cmd(codec), duration_s, file_index, total_files, &input_display, "encode", &out, &mut on_progress,
+            );
+            if let Err(e) = attempt {
+                // The hardware encoder can refuse a job the software
+                // one handles fine — most commonly because NVENC's
+                // H.264 block maxes out at 4096 px in either direction,
+                // so a full-scale 4K+ render (4160-wide overscan plates
+                // are common) dies at encoder-init with "Width 4160
+                // exceeds 4096". Same story on a machine with no NVIDIA
+                // GPU, a driver too old for the requested preset, or
+                // all encode sessions already in use.
+                //
+                // None of that is worth failing the encode over: retry
+                // once on libx264 and tell the user what happened. The
+                // retry is cheap because these failures happen at
+                // encoder-init, before a single frame is written.
+                let hw_refused = codec != "libx264"
+                    && e.downcast_ref::<FfmpegFailure>()
+                        .is_some_and(|f| f.is_hw_encoder_unavailable());
+                if !hw_refused {
+                    return Err(e);
+                }
+                on_progress(ProgressEvent {
+                    file_index,
+                    total_files,
+                    input: input_display.clone(),
+                    stage: "encode".into(),
+                    percent: None,
+                    message: Some(
+                        "GPU encoder refused this clip — re-encoding on the CPU (libx264)".into(),
+                    ),
+                });
+                run_with_progress_cleanup(
+                    build_cmd("libx264"), duration_s, file_index, total_files, &input_display, "encode", &out, &mut on_progress,
+                )?;
+            }
+        }
+        Format::ProRes => {
+            use crate::presets::ProResProfile;
+
+            let filter = build_filter_chain(preset);
+            // 422 HQ is the house default for a preset that predates
+            // the field (or a user who never touched the dropdown) —
+            // the tier most post workflows actually hand around.
+            let profile = preset.prores_profile.unwrap_or(ProResProfile::Hq);
+            // Only ask for an alpha plane when the profile can carry
+            // one AND the source actually has one. Probing costs one
+            // ffprobe call, and skipping it on the 4:2:2 tiers means
+            // the common case doesn't pay for it at all.
+            let has_alpha = profile.supports_alpha() && source_has_alpha(ffmpeg, input);
+            let pix_fmt = profile.pix_fmt(has_alpha);
+
+            on_progress(ProgressEvent {
+                file_index,
+                total_files,
+                input: input_display.clone(),
+                stage: "encode".into(),
+                percent: None,
+                message: Some(format!(
+                    "Encoding ProRes {}{}",
+                    prores_profile_label(profile),
+                    if has_alpha { " · alpha preserved" } else { "" },
+                )),
+            });
+
+            let mut cmd = video_input_cmd(ffmpeg, &verbosity, input, preset, &filter);
+            cmd.args(["-c:v", "prores_ks"]);
+            cmd.args(["-profile:v", &profile.profile_num().to_string()]);
+            cmd.args(["-pix_fmt", pix_fmt]);
+            // ffmpeg stamps its own vendor id ("fmpg") by default,
+            // which some Apple and Avid tooling treats as a foreign
+            // file. `apl0` is the id Apple's own encoder writes, and
+            // it's what every "ffmpeg ProRes that Final Cut accepts"
+            // recipe sets. Purely a metadata field — the bitstream is
+            // identical either way.
+            cmd.args(["-vendor", "apl0"]);
+            if profile.supports_alpha() {
+                // 16-bit alpha is ffmpeg's default, but state it so a
+                // future default change can't silently downgrade a
+                // matte to 8 bits.
+                cmd.args(["-alpha_bits", "16"]);
+            }
+            // ProRes is a mastering format — the audio that rides
+            // along with it is expected to be uncompressed. Anything
+            // that took the trouble to ask for ProRes would not want
+            // its audio quietly re-encoded to lossy AAC.
+            if preset.modify_remove_audio.unwrap_or(false)
+                || matches!(input, EncodeInput::Sequence { .. })
+            {
+                cmd.arg("-an");
+            } else {
+                cmd.args(["-c:a", "pcm_s16le"]);
+                let afilters = modify_audio_filters(preset);
+                if !afilters.is_empty() {
+                    cmd.args(["-af", &afilters.join(",")]);
+                }
+            }
+            // Deliberately no `-movflags +faststart`: it forces a
+            // second full rewrite of the file after encoding, and a
+            // ProRes master can be tens of gigabytes. Faststart only
+            // matters for progressive download over HTTP, which is not
+            // what anyone does with an intermediate.
+            cmd.args(["-progress", "pipe:1"]).arg(&out);
+            run_with_progress_cleanup(
+                cmd, duration_s, file_index, total_files, &input_display, "encode", &out, &mut on_progress,
+            )?;
         }
         Format::Image => {
             // Image preset on a non-image input is almost always user
@@ -1404,12 +1669,58 @@ fn run_with_progress(
         // just the tail — the line that explains the failure is often
         // the first one ffmpeg printed, long scrolled past by the time
         // it gives up.
-        if let Some(hint) = diagnose_stderr(&stderr_lines) {
-            bail!("{hint}\n\nffmpeg exited with status {status}\n--- last stderr lines ---\n{summary}");
-        }
-        bail!("ffmpeg exited with status {status}\n--- last stderr lines ---\n{summary}");
+        let message = match diagnose_stderr(&stderr_lines) {
+            Some(hint) => format!(
+                "{hint}\n\nffmpeg exited with status {status}\n--- last stderr lines ---\n{summary}"
+            ),
+            None => format!("ffmpeg exited with status {status}\n--- last stderr lines ---\n{summary}"),
+        };
+        return Err(anyhow!(FfmpegFailure { message, stderr: stderr_lines }));
     }
     Ok(())
+}
+
+/// A non-zero ffmpeg exit, carrying the FULL stderr rather than just
+/// the tail the message quotes. Callers that want to react to a
+/// specific failure — the MP4 branch retrying on the software encoder
+/// when the GPU one bails — downcast to this and inspect `stderr`.
+/// `Display` is exactly the text the user saw before this type existed.
+#[derive(Debug)]
+pub struct FfmpegFailure {
+    message: String,
+    stderr: Vec<String>,
+}
+
+impl std::fmt::Display for FfmpegFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for FfmpegFailure {}
+
+impl FfmpegFailure {
+    /// True when the hardware H.264 encoder declined the job, whatever
+    /// the reason: frame larger than NVENC's 4096-px H.264 limit, no
+    /// NVIDIA GPU present, driver too old for the requested preset, or
+    /// every encode session already taken.
+    ///
+    /// Every one of those prints at least one line naming the encoder,
+    /// so requiring "nvenc" in the line keeps unrelated failures (a bad
+    /// filter graph, a missing input) out of the retry path — those
+    /// must still surface as errors, since libx264 would fail the same
+    /// way and we'd just be doing the work twice.
+    fn is_hw_encoder_unavailable(&self) -> bool {
+        self.stderr.iter().any(|line| {
+            let l = line.to_ascii_lowercase();
+            l.contains("nvenc")
+                && (l.contains("no capable devices found")
+                    || l.contains("exceeds")
+                    || l.contains("cannot load nvcuda")
+                    || l.contains("openencodesessionex failed")
+                    || l.contains("error while opening encoder"))
+        })
+    }
 }
 
 /// Translate a known ffmpeg stderr signature into a plain-English
@@ -1681,6 +1992,39 @@ pub fn probe_duration(ffmpeg: &Path, input: &Path) -> Option<f64> {
     s.trim().parse::<f64>().ok()
 }
 
+/// Does this ffprobe pixel-format name carry an alpha channel?
+///
+/// Matched by name rather than by asking libav, because ffprobe hands
+/// us a string and there's no cheap way to interrogate the format
+/// descriptor from here. The families below cover everything the app
+/// can realistically be pointed at — PNG/TIFF/EXR renders, ProRes
+/// 4444 and QuickTime RLE sources, and the planar RGB formats OpenEXR
+/// decodes to. Anything unrecognised reads as "no alpha", which is the
+/// safe answer: the encode still succeeds, it just doesn't reserve an
+/// alpha plane that would have been empty.
+fn pix_fmt_has_alpha(pix_fmt: &str) -> bool {
+    let pf = pix_fmt.trim().to_ascii_lowercase();
+    // Planar YUV + alpha (yuva420p, yuva444p10le, …) and planar
+    // GBR + alpha (gbrap, gbrapf32le — what EXR decodes to).
+    if pf.starts_with("yuva") || pf.starts_with("gbrap") {
+        return true;
+    }
+    // Greyscale + alpha: ya8 / ya16le. Guard against matching
+    // "yuv..." by requiring the third char to not continue a yuv name.
+    if pf.starts_with("ya8") || pf.starts_with("ya16") {
+        return true;
+    }
+    // Packed 32-bit RGB orderings, at any bit depth (rgba64le etc.).
+    for family in ["rgba", "bgra", "argb", "abgr"] {
+        if pf.starts_with(family) {
+            return true;
+        }
+    }
+    // Paletted images can carry per-entry alpha, and ffmpeg treats
+    // pal8 as an alpha-capable format.
+    pf == "pal8"
+}
+
 /// Shape of the first-file probe that feeds the Merge tool's ad-hoc
 /// preset. All fields are best-effort — missing values fall back to
 /// sensible defaults in [`derive_merge_preset`].
@@ -1689,6 +2033,10 @@ pub struct VideoProbe {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub fps: Option<u32>,
+    /// Source pixel format as ffprobe names it (`rgba`, `yuv420p`,
+    /// `gbrapf32le`, …). The ProRes branch reads this to decide
+    /// whether a 4444 encode needs an alpha plane.
+    pub pix_fmt: Option<String>,
 }
 
 /// Probe the first video stream of `input` for dimensions + fps. Used by
@@ -1705,7 +2053,7 @@ pub fn probe_video(ffmpeg: &Path, input: &Path) -> VideoProbe {
     cmd.args([
         "-v", "error",
         "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate",
+        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,pix_fmt",
         "-of", "default=nw=1",
     ])
     .arg(input)
@@ -1721,6 +2069,12 @@ pub fn probe_video(ffmpeg: &Path, input: &Path) -> VideoProbe {
         match k.trim() {
             "width" => p.width = v.trim().parse().ok(),
             "height" => p.height = v.trim().parse().ok(),
+            "pix_fmt" => {
+                let t = v.trim();
+                if !t.is_empty() && t != "unknown" {
+                    p.pix_fmt = Some(t.to_string());
+                }
+            }
             // `avg_frame_rate` wins when present (actual playback rate);
             // fall back to `r_frame_rate` (declared rate) if we only saw
             // that one. GIF files typically only publish r_frame_rate.
@@ -1956,7 +2310,10 @@ pub fn derive_merge_preset(ffmpeg: &Path, first: &Path) -> Preset {
         modify_rotate: None,
         modify_trim_start_sec: None,
         modify_trim_end_sec: None,
+        modify_speed: None,
+        modify_interp: None,
         watermark: None,
+        prores_profile: None,
         icon: None,
         order: 0,
     }
@@ -2034,7 +2391,10 @@ pub fn derive_grayscale_preset(ffmpeg: &Path, input: &Path) -> Preset {
             modify_rotate: None,
             modify_trim_start_sec: None,
             modify_trim_end_sec: None,
+            modify_speed: None,
+            modify_interp: None,
             watermark: None,
+            prores_profile: None,
             icon: None,
             order: 0,
         };
@@ -2078,7 +2438,10 @@ pub fn derive_grayscale_preset(ffmpeg: &Path, input: &Path) -> Preset {
         modify_rotate: None,
         modify_trim_start_sec: None,
         modify_trim_end_sec: None,
+        modify_speed: None,
+        modify_interp: None,
         watermark: None,
+        prores_profile: None,
         icon: None,
         order: 0,
     }
@@ -2168,7 +2531,10 @@ pub fn derive_overlay_preset(ffmpeg: &Path, input: &Path, cfg: OverlayConfig) ->
             modify_rotate: None,
             modify_trim_start_sec: None,
             modify_trim_end_sec: None,
+            modify_speed: None,
+            modify_interp: None,
             watermark: watermark.clone(),
+            prores_profile: None,
             icon: None,
             order: 0,
         };
@@ -2212,7 +2578,10 @@ pub fn derive_overlay_preset(ffmpeg: &Path, input: &Path, cfg: OverlayConfig) ->
         modify_rotate: None,
         modify_trim_start_sec: None,
         modify_trim_end_sec: None,
+        modify_speed: None,
+        modify_interp: None,
         watermark: watermark.clone(),
+        prores_profile: None,
         icon: None,
         order: 0,
     }
@@ -3730,6 +4099,13 @@ pub struct ModifySpec {
     /// timeline. Ignored for image inputs.
     pub trim_start_sec: Option<f32>,
     pub trim_end_sec: Option<f32>,
+    /// Playback-speed multiplier. 1.0 means "leave it alone"; the
+    /// dialog clamps to [`MIN_SPEED`]..=[`MAX_SPEED`]. Ignored for
+    /// image inputs, which have no timeline to retime.
+    pub speed: f32,
+    /// Frame-resampling mode paired with `speed`. Irrelevant when
+    /// `speed` is 1.0.
+    pub interp: SpeedInterp,
     /// Replace the source file with the encoded output. Implemented
     /// as encode-to-temp + atomic rename so a failure leaves the
     /// source untouched.
@@ -3797,6 +4173,8 @@ pub fn encode_modify_files(
             spec.rotate,
             spec.trim_start_sec,
             spec.trim_end_sec,
+            spec.speed,
+            spec.interp,
         );
 
         let mut bits: Vec<String> = Vec::new();
@@ -3818,6 +4196,14 @@ pub fn encode_modify_files(
                 .unwrap_or_else(|| "end".to_string());
             bits.push(format!("trim {s:.2}–{e_str}s"));
         }
+        if (spec.speed - 1.0).abs() > 0.001 {
+            let mode = match spec.interp {
+                SpeedInterp::Drop => "drop",
+                SpeedInterp::Blend => "blend",
+                SpeedInterp::Motion => "motion",
+            };
+            bits.push(format!("speed {:.2}× ({mode})", spec.speed));
+        }
         let summary = if bits.is_empty() { "encoding".into() } else { bits.join(" + ") };
 
         on_progress(ProgressEvent {
@@ -3830,7 +4216,19 @@ pub fn encode_modify_files(
         });
 
         let encode_input = EncodeInput::File(input.clone());
-        let duration = encode_input.duration_hint(ffmpeg);
+        // ffmpeg's `-progress` reports OUTPUT time, so the hint the
+        // percentage is measured against has to be the output's
+        // duration. A speed change is the one Modify transform that
+        // moves it: 2× halves it, 0.5× doubles it. (Trim shortens the
+        // output too — that inaccuracy predates this and is left
+        // alone.)
+        let duration = encode_input.duration_hint(ffmpeg).map(|d| {
+            if spec.speed > 0.0 {
+                d / spec.speed as f64
+            } else {
+                d
+            }
+        });
 
         // Build the output preset's expected destination. encode_file
         // calls `output_path(input, preset)` internally; we need to
@@ -3940,6 +4338,8 @@ pub fn derive_modify_preset(
     rotate: u32,
     trim_start_sec: Option<f32>,
     trim_end_sec: Option<f32>,
+    speed: f32,
+    interp: SpeedInterp,
 ) -> Preset {
     use crate::presets::{Dither, Format, ImageCodec};
 
@@ -3989,7 +4389,13 @@ pub fn derive_modify_preset(
             modify_rotate: Some(rotate),
             modify_trim_start_sec: trim_start_sec,
             modify_trim_end_sec: trim_end_sec,
+            // A still has no timeline, so a speed change is meaningless
+            // here. Pin it off rather than plumbing a `setpts` that
+            // would only confuse the single-frame encode.
+            modify_speed: None,
+            modify_interp: None,
             watermark: None,
+            prores_profile: None,
             icon: None,
             order: 0,
         };
@@ -4038,7 +4444,10 @@ pub fn derive_modify_preset(
         modify_rotate: Some(rotate),
         modify_trim_start_sec: trim_start_sec,
         modify_trim_end_sec: trim_end_sec,
+        modify_speed: Some(speed),
+        modify_interp: Some(interp),
         watermark: None,
+        prores_profile: None,
         icon: None,
         order: 0,
     }
@@ -4210,5 +4619,207 @@ mod tests {
             "Error initializing complex filters.".to_string(),
         ])
         .is_none());
+    }
+
+    #[test]
+    fn detects_alpha_from_pixel_format_names() {
+        for pf in [
+            "rgba", "bgra", "argb", "abgr", "rgba64le", "yuva420p", "yuva444p10le",
+            "gbrap", "gbrapf32le", "ya8", "ya16le", "pal8",
+        ] {
+            assert!(pix_fmt_has_alpha(pf), "{pf} should read as having alpha");
+        }
+        // The near-misses matter more than the hits: `yuv444p10le` is
+        // one character away from the alpha variant, and `rgb24` /
+        // `gbrp` are the opaque siblings of formats that DO have it.
+        for pf in [
+            "yuv420p", "yuv422p10le", "yuv444p10le", "rgb24", "bgr24", "gbrp",
+            "gray", "nv12", "",
+        ] {
+            assert!(!pix_fmt_has_alpha(pf), "{pf} should read as opaque");
+        }
+    }
+
+    #[test]
+    fn prores_profiles_map_to_encoder_values() {
+        use crate::presets::ProResProfile as P;
+        assert_eq!(P::Proxy.profile_num(), 0);
+        assert_eq!(P::Hq.profile_num(), 3);
+        assert_eq!(P::P4444Xq.profile_num(), 5);
+        // 4:2:2 tiers have exactly one legal pixel format, and asking
+        // for alpha on one must NOT silently produce a 444 file.
+        assert_eq!(P::Hq.pix_fmt(true), "yuv422p10le");
+        assert_eq!(P::Hq.pix_fmt(false), "yuv422p10le");
+        assert!(!P::Hq.supports_alpha());
+        // 4444 picks by what the source actually has, so an opaque
+        // source doesn't pay for an empty alpha plane.
+        assert!(P::P4444.supports_alpha());
+        assert_eq!(P::P4444.pix_fmt(true), "yuva444p10le");
+        assert_eq!(P::P4444.pix_fmt(false), "yuv444p10le");
+    }
+
+    /// Presets written before ProRes existed have no `prores_profile`,
+    /// and the wire names are the ones the UI sends.
+    #[test]
+    fn prores_preset_fields_round_trip() {
+        use crate::presets::ProResProfile as P;
+        let mut p = crate::defaults::default_custom();
+        p.format = crate::presets::Format::ProRes;
+        p.prores_profile = Some(P::P4444Xq);
+        let json = serde_json::to_string(&p).expect("serialise");
+        assert!(json.contains("\"format\":\"prores\""), "{json}");
+        assert!(json.contains("\"prores_profile\":\"4444xq\""), "{json}");
+        let back: Preset = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.prores_profile, Some(P::P4444Xq));
+
+        // A preset.json from before the field existed still loads.
+        let older = json.replace("\"prores_profile\":\"4444xq\",", "");
+        let back: Preset = serde_json::from_str(&older).expect("deserialise legacy");
+        assert_eq!(back.prores_profile, None);
+    }
+
+    fn failure(lines: &[&str]) -> FfmpegFailure {
+        FfmpegFailure {
+            message: "ffmpeg exited with status 1".into(),
+            stderr: lines.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Verbatim stderr from a 4160×2340 PNG sequence encoded at full
+    /// scale with `use_cuda` on. NVENC's H.264 block stops at 4096 px,
+    /// and the line that says so is the FIRST one printed — long gone
+    /// from the 15-line tail by the time ffmpeg gives up, which is why
+    /// the retry check reads the whole stderr.
+    #[test]
+    fn recognises_nvenc_refusing_an_oversized_frame() {
+        assert!(failure(&[
+            "[h264_nvenc @ 000001cd] Width 4160 exceeds 4096",
+            "[h264_nvenc @ 000001cd] No capable devices found",
+            "[vost#0:0/h264_nvenc @ 000001cd] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.",
+            "[vf#0:0 @ 000001cd] Task finished with error code: -542398533 (Generic error in an external library)",
+            "[out#0/mp4 @ 000001cd] Nothing was written into output file, because at least one of its streams received no packets.",
+        ])
+        .is_hw_encoder_unavailable());
+    }
+
+    #[test]
+    fn recognises_a_machine_with_no_usable_nvidia_encoder() {
+        assert!(failure(&[
+            "[h264_nvenc @ 000001cd] Cannot load nvcuda.dll",
+            "[h264_nvenc @ 000001cd] The minimum required Nvidia driver for nvenc is 471.41 or newer",
+        ])
+        .is_hw_encoder_unavailable());
+        assert!(failure(&[
+            "[h264_nvenc @ 000001cd] OpenEncodeSessionEx failed: out of memory (10): (no details)",
+        ])
+        .is_hw_encoder_unavailable());
+    }
+
+    /// Failures that have nothing to do with the encoder must fall
+    /// straight through — libx264 would fail identically, so retrying
+    /// would just do the work twice and bury the real error.
+    #[test]
+    fn leaves_unrelated_failures_out_of_the_retry_path() {
+        assert!(!failure(&[
+            "[AVFilterGraph @ 000001cd] No such filter: 'bogus'",
+            "Error initializing complex filters.",
+        ])
+        .is_hw_encoder_unavailable());
+        assert!(!failure(&[
+            "[image2 @ 000001cd] Could not open file : render_0001.png",
+            "Error opening input files: No such file or directory",
+        ])
+        .is_hw_encoder_unavailable());
+        assert!(!failure(&["[libx264 @ 000001cd] height not divisible by 2"])
+            .is_hw_encoder_unavailable());
+        assert!(!failure(&[]).is_hw_encoder_unavailable());
+    }
+
+    /// A bare preset with no transforms, standing in for what the
+    /// Modify dialog hands the encoder. `fps` is seeded the way
+    /// `derive_modify_preset` seeds it (from the source probe).
+    fn speed_preset(speed: Option<f32>, interp: Option<SpeedInterp>) -> Preset {
+        let mut p = crate::defaults::default_custom();
+        p.width = None;
+        p.height = None;
+        p.fps = Some(30);
+        p.crop = None;
+        p.grayscale = None;
+        p.timecode = None;
+        p.modify_speed = speed;
+        p.modify_interp = interp;
+        p
+    }
+
+    #[test]
+    fn speed_of_one_leaves_the_chain_alone() {
+        let chain = build_filter_chain(&speed_preset(Some(1.0), Some(SpeedInterp::Motion)));
+        assert!(!chain.contains("setpts"), "got {chain}");
+        assert!(!chain.contains("minterpolate"), "got {chain}");
+    }
+
+    /// Speeding up compresses PTS, and the follow-up `fps` filter is
+    /// what keeps the output at the source frame rate instead of
+    /// emitting a 60 fps file from a 30 fps source.
+    #[test]
+    fn speed_up_retimes_and_renormalises_the_frame_rate() {
+        let chain = build_filter_chain(&speed_preset(Some(2.0), Some(SpeedInterp::Drop)));
+        assert!(chain.contains("setpts=0.500000*PTS"), "got {chain}");
+        assert!(chain.ends_with("fps=30"), "got {chain}");
+        assert!(!chain.contains("minterpolate"), "got {chain}");
+    }
+
+    #[test]
+    fn interpolated_slow_motion_uses_minterpolate_at_the_source_rate() {
+        let chain = build_filter_chain(&speed_preset(Some(0.5), Some(SpeedInterp::Motion)));
+        assert!(chain.contains("setpts=2.000000*PTS"), "got {chain}");
+        assert!(chain.contains("minterpolate=fps=30:mi_mode=mci"), "got {chain}");
+
+        let blended = build_filter_chain(&speed_preset(Some(0.5), Some(SpeedInterp::Blend)));
+        assert!(blended.contains("minterpolate=fps=30:mi_mode=blend"), "got {blended}");
+    }
+
+    /// The retime must land after `reverse`, which rewrites timestamps
+    /// itself — running `setpts` first would have it undone.
+    #[test]
+    fn speed_runs_after_reverse() {
+        let mut p = speed_preset(Some(2.0), Some(SpeedInterp::Drop));
+        p.modify_reverse = Some(true);
+        let chain = build_filter_chain(&p);
+        let rev = chain.find("reverse").expect("reverse missing");
+        let pts = chain.find("setpts").expect("setpts missing");
+        assert!(rev < pts, "got {chain}");
+    }
+
+    /// A hand-edited or malformed multiplier must never reach `setpts`
+    /// as a zero (divide-by-zero) or a negative.
+    #[test]
+    fn out_of_range_speeds_are_clamped() {
+        assert_eq!(effective_speed(&speed_preset(Some(0.0), None)), Some(MIN_SPEED));
+        assert_eq!(effective_speed(&speed_preset(Some(-4.0), None)), Some(MIN_SPEED));
+        assert_eq!(effective_speed(&speed_preset(Some(1000.0), None)), Some(MAX_SPEED));
+        assert_eq!(effective_speed(&speed_preset(Some(f32::NAN), None)), None);
+        assert_eq!(effective_speed(&speed_preset(None, None)), None);
+    }
+
+    /// `atempo` only accepts 0.5–2.0 per instance on the builds we
+    /// support, so extreme multipliers have to be decomposed.
+    #[test]
+    fn atempo_chain_stays_within_each_stage_limit() {
+        assert!(atempo_chain(1.0).is_empty());
+        assert_eq!(atempo_chain(2.0), vec!["atempo=2.000000"]);
+        assert_eq!(atempo_chain(0.25), vec!["atempo=0.5", "atempo=0.500000"]);
+        // 8× → two full doublings, then the remaining 2×.
+        assert_eq!(
+            atempo_chain(8.0),
+            vec!["atempo=2.0", "atempo=2.0", "atempo=2.000000"]
+        );
+        for speed in [0.1f32, 0.3, 0.5, 1.5, 3.7, 10.0] {
+            let product: f32 = atempo_chain(speed)
+                .iter()
+                .map(|f| f.trim_start_matches("atempo=").parse::<f32>().unwrap())
+                .product();
+            assert!((product - speed).abs() < 0.01, "{speed} → {product}");
+        }
     }
 }
