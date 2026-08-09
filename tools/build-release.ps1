@@ -185,6 +185,33 @@ try {
         }
     }
 
+    # Verify the bootstrapper is genuinely Microsoft-signed before it
+    # gets embedded verbatim into every installer we ship. It arrives
+    # over the network with no integrity check of its own, and it is
+    # third-party code we then hand to our users under our signature —
+    # so whatever lands here is something we are vouching for.
+    #
+    # Authenticode rather than a pinned SHA-256: this is the *evergreen*
+    # bootstrapper and Microsoft reissues it regularly, so a pinned hash
+    # would fail the build on their release cadence rather than on any
+    # real problem. The signature check keeps working across versions and
+    # is what actually detects tampering or a hijacked redirect.
+    #
+    # Runs on every build, not just after a download — a stale or
+    # modified file already sitting in installer\ is exactly as dangerous.
+    $wvSig = Get-AuthenticodeSignature -FilePath $webview2Boot
+    if ($wvSig.Status -ne 'Valid') {
+        Remove-Item $webview2Boot -Force -ErrorAction SilentlyContinue
+        throw ("WebView2 bootstrapper failed Authenticode verification " +
+               "(status: $($wvSig.Status)). The file has been deleted; re-run to fetch it again.")
+    }
+    if ($wvSig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        Remove-Item $webview2Boot -Force -ErrorAction SilentlyContinue
+        throw ("WebView2 bootstrapper is signed by an unexpected publisher: " +
+               "$($wvSig.SignerCertificate.Subject). The file has been deleted.")
+    }
+    Write-Host "  WebView2 bootstrapper: Authenticode OK ($($wvSig.SignerCertificate.Subject))" -ForegroundColor DarkGray
+
     $iscc = $null
     # Per-machine installs land in Program Files; winget's default
     # per-user install lands under %LOCALAPPDATA%\Programs\. Check both.

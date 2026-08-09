@@ -556,22 +556,28 @@ pub fn encode(
     } else {
         raw_paths
     };
-    let inputs: Vec<EncodeInput> = collapsed
-        .into_iter()
-        .map(|p| {
-            if tools.sequence.enabled {
-                match sequence::detect(&p, tools.sequence.min_digits) {
-                    Some(info) => EncodeInput::Sequence { info, fps: preset_fps },
-                    None => EncodeInput::File(p),
-                }
-            } else {
-                EncodeInput::File(p)
-            }
-        })
-        .collect();
-    let total = inputs.len();
-
     std::thread::spawn(move || {
+        // Sequence detection walks the containing directory, so it is
+        // filesystem work that must not run on the thread dispatching a
+        // plain Tauri command (the main thread, in Tauri v2). One shared
+        // `DirCache` also means a 500-frame selection lists its folder
+        // once instead of 500 times.
+        let mut cache = sequence::DirCache::new();
+        let inputs: Vec<EncodeInput> = collapsed
+            .into_iter()
+            .map(|p| {
+                if tools.sequence.enabled {
+                    match sequence::detect_cached(&p, tools.sequence.min_digits, &mut cache) {
+                        Some(info) => EncodeInput::Sequence { info, fps: preset_fps },
+                        None => EncodeInput::File(p),
+                    }
+                } else {
+                    EncodeInput::File(p)
+                }
+            })
+            .collect();
+        let total = inputs.len();
+
         for (i, input) in inputs.iter().enumerate() {
             // Stop the batch on cancel instead of walking the rest of the
             // selection. Without this, cancelling file 2 of 20 still
@@ -857,32 +863,41 @@ pub fn encode_grayscale(
         raw_paths
     };
 
-    // Derive a per-file preset so each input keeps its own format /
-    // dimensions / fps rather than being forced to match the first.
-    let jobs: Vec<(EncodeInput, Preset)> = collapsed
-        .into_iter()
-        .map(|p| {
-            let preset = ffmpeg::derive_grayscale_preset(&ffmpeg_path, &p);
-            let input = if tools.sequence.enabled {
-                match sequence::detect(&p, tools.sequence.min_digits) {
-                    Some(info) => EncodeInput::Sequence {
-                        info,
-                        fps: preset
-                            .fps
-                            .map(|f| f as f32)
-                            .unwrap_or(tools.sequence.default_fps),
-                    },
-                    None => EncodeInput::File(p),
-                }
-            } else {
-                EncodeInput::File(p)
-            };
-            (input, preset)
-        })
-        .collect();
-    let total = jobs.len();
-
     std::thread::spawn(move || {
+        // Derive a per-file preset so each input keeps its own format /
+        // dimensions / fps rather than being forced to match the first.
+        //
+        // This runs INSIDE the worker thread. `derive_grayscale_preset`
+        // spawns an ffprobe per file and `sequence::detect` walks the
+        // directory, and doing that before the spawn meant a plain
+        // (non-async) Tauri command — which Tauri v2 dispatches on the
+        // main thread — held the UI hostage for the whole batch. On a
+        // fifty-image selection that was seconds of completely frozen
+        // windows before the first progress event appeared.
+        let mut cache = sequence::DirCache::new();
+        let jobs: Vec<(EncodeInput, Preset)> = collapsed
+            .into_iter()
+            .map(|p| {
+                let preset = ffmpeg::derive_grayscale_preset(&ffmpeg_path, &p);
+                let input = if tools.sequence.enabled {
+                    match sequence::detect_cached(&p, tools.sequence.min_digits, &mut cache) {
+                        Some(info) => EncodeInput::Sequence {
+                            info,
+                            fps: preset
+                                .fps
+                                .map(|f| f as f32)
+                                .unwrap_or(tools.sequence.default_fps),
+                        },
+                        None => EncodeInput::File(p),
+                    }
+                } else {
+                    EncodeInput::File(p)
+                };
+                (input, preset)
+            })
+            .collect();
+        let total = jobs.len();
+
         for (i, (input, preset)) in jobs.iter().enumerate() {
             let duration = input.duration_hint(&ffmpeg_path);
             let app_cl = app.clone();
@@ -1078,6 +1093,13 @@ pub fn encode_overlay(
         raw_paths
     };
 
+    std::thread::spawn(move || {
+    // Built INSIDE the worker thread: `derive_overlay_preset` probes
+    // each clip with ffprobe and `sequence::detect` walks the directory.
+    // A plain (non-async) Tauri command runs on the main thread in Tauri
+    // v2, so doing this before the spawn froze every window for the
+    // whole selection before the first progress event landed.
+    let mut cache = sequence::DirCache::new();
     let jobs: Vec<(EncodeInput, Preset)> = collapsed
         .into_iter()
         .map(|p| {
@@ -1119,7 +1141,7 @@ pub fn encode_overlay(
             };
             let preset = ffmpeg::derive_overlay_preset(&ffmpeg_path, &p, cfg);
             let input = if tools.sequence.enabled {
-                match sequence::detect(&p, tools.sequence.min_digits) {
+                match sequence::detect_cached(&p, tools.sequence.min_digits, &mut cache) {
                     Some(info) => EncodeInput::Sequence {
                         info,
                         fps: preset
@@ -1137,7 +1159,6 @@ pub fn encode_overlay(
         .collect();
     let total = jobs.len();
 
-    std::thread::spawn(move || {
         for (i, (input, preset)) in jobs.iter().enumerate() {
             let duration = input.duration_hint(&ffmpeg_path);
             let app_cl = app.clone();

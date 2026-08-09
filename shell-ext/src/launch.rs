@@ -16,8 +16,18 @@ use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 use crate::presets::read_exe_path;
 
 /// Pull every filesystem path out of an `IShellItemArray`. Items that
-/// don't have a filesystem path (virtual items, library folders) are
-/// skipped — we have nothing to do with them anyway.
+/// don't have a filesystem path — entries inside a .zip, an MTP camera,
+/// an FTP site, a search-results view — can't be handed to ffmpeg and
+/// are skipped.
+///
+/// Skipping used to be silent, and that quietly changed what the user
+/// asked for: every tool gates its menu visibility on the RAW
+/// `GetCount()` but then acts on this filtered list, so a five-item
+/// selection with one unresolvable entry converted four files and said
+/// nothing, and a two-item Merge could arrive at the app with one path
+/// and fail with a message that doesn't match what the user selected.
+/// One notice per invocation is cheap and only appears in a case that
+/// genuinely can't be serviced.
 pub fn items_to_paths(items: Option<&IShellItemArray>) -> Vec<PathBuf> {
     let Some(arr) = items else { return Vec::new() };
     let count = unsafe { arr.GetCount().unwrap_or(0) };
@@ -37,7 +47,51 @@ pub fn items_to_paths(items: Option<&IShellItemArray>) -> Vec<PathBuf> {
             }
         }
     }
+
+    let skipped = count as usize - out.len();
+    if skipped > 0 {
+        let text = if out.is_empty() {
+            format!(
+                "Offspring can't work on {} of the selected item{}.\n\n\
+                 They have no location on disk — items inside a .zip, on a \
+                 camera or phone, or in a search-results view have to be \
+                 copied to a folder first.",
+                skipped,
+                if skipped == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "Skipping {} of the selected item{} — {} ha{} no location on \
+                 disk (inside a .zip, on a camera or phone, or in a \
+                 search-results view).\n\n\
+                 Continuing with the other {}.",
+                skipped,
+                if skipped == 1 { "" } else { "s" },
+                if skipped == 1 { "it" } else { "they" },
+                if skipped == 1 { "s" } else { "ve" },
+                out.len()
+            )
+        };
+        message_box(&text);
+    }
     out
+}
+
+/// Show a modal notice. The only channel available from inside
+/// Explorer's process.
+fn message_box(text: &str) {
+    let mut text_w: Vec<u16> = text.encode_utf16().collect();
+    text_w.push(0);
+    let mut caption_w: Vec<u16> = "Offspring".encode_utf16().collect();
+    caption_w.push(0);
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text_w.as_ptr()),
+            PCWSTR(caption_w.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
 }
 
 /// Surface a failed `CreateProcess` instead of swallowing it.
@@ -58,21 +112,13 @@ fn report_spawn_failure(result: std::io::Result<std::process::Child>, exe: &str)
          Reinstalling Offspring will repair this.",
         e, exe
     );
-    let mut text_w: Vec<u16> = text.encode_utf16().collect();
-    text_w.push(0);
-    let mut caption_w: Vec<u16> = "Offspring".encode_utf16().collect();
-    caption_w.push(0);
-    unsafe {
-        MessageBoxW(
-            None,
-            PCWSTR(text_w.as_ptr()),
-            PCWSTR(caption_w.as_ptr()),
-            MB_OK | MB_ICONERROR,
-        );
-    }
+    message_box(&text);
 }
 
 pub fn spawn_preset(preset_id: &str, files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("preset").arg("--id").arg(preset_id);
@@ -83,6 +129,9 @@ pub fn spawn_preset(preset_id: &str, files: &[PathBuf]) {
 }
 
 pub fn spawn_custom(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("custom");
@@ -93,6 +142,9 @@ pub fn spawn_custom(files: &[PathBuf]) {
 }
 
 pub fn spawn_merge(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("merge");
@@ -103,6 +155,9 @@ pub fn spawn_merge(files: &[PathBuf]) {
 }
 
 pub fn spawn_grayscale(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("grayscale");
@@ -113,6 +168,9 @@ pub fn spawn_grayscale(files: &[PathBuf]) {
 }
 
 pub fn spawn_compare(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("compare");
@@ -123,6 +181,9 @@ pub fn spawn_compare(files: &[PathBuf]) {
 }
 
 pub fn spawn_overlay(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("overlay");
@@ -133,6 +194,9 @@ pub fn spawn_overlay(files: &[PathBuf]) {
 }
 
 pub fn spawn_trim(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("trim");
@@ -143,6 +207,9 @@ pub fn spawn_trim(files: &[PathBuf]) {
 }
 
 pub fn spawn_invert(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("invert");
@@ -153,6 +220,9 @@ pub fn spawn_invert(files: &[PathBuf]) {
 }
 
 pub fn spawn_make_square(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("make-square");
@@ -163,6 +233,9 @@ pub fn spawn_make_square(files: &[PathBuf]) {
 }
 
 pub fn spawn_modify(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("modify");

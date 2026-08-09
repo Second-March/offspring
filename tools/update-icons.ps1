@@ -63,7 +63,18 @@ function Save-Resized {
 }
 
 # (size, relative path) pairs.
+#
+# Every generated file that something else SHIPS has to be listed here.
+# The two 16px variants and the macOS Services icon were missing, and all
+# three are shipped: tauri.conf.json's `icon` array lists
+# `icons/16x16.png` + `icons/16x16@2x.png`, and tauri.macos.conf.json
+# bundles `icons/ServiceMenuIcon.png` (referenced from Info.plist).
+# Regenerating from a new master therefore refreshed everything EXCEPT
+# the smallest, most-visible sizes — the taskbar and title-bar icons kept
+# the previous logo, which reads as a half-finished rebrand.
 $targets = @(
+    @{ size=16;  path="src-tauri\icons\16x16.png" },
+    @{ size=32;  path="src-tauri\icons\16x16@2x.png" },
     @{ size=32;  path="src-tauri\icons\32x32.png" },
     @{ size=64;  path="src-tauri\icons\64x64.png" },
     @{ size=128; path="src-tauri\icons\128x128.png" },
@@ -80,6 +91,10 @@ $targets = @(
     @{ size=284; path="src-tauri\icons\Square284x284Logo.png" },
     @{ size=310; path="src-tauri\icons\Square310x310Logo.png" },
     @{ size=50;  path="src-tauri\icons\StoreLogo.png" },
+
+    # macOS Finder Services menu entry ("Offspring…"). Bundled via
+    # tauri.macos.conf.json `resources` and named in Info.plist.
+    @{ size=32;  path="src-tauri\icons\ServiceMenuIcon.png" },
 
     @{ size=44;  path="installer\msix\stage\Assets\Square44x44Logo.png" },
     @{ size=150; path="installer\msix\stage\Assets\Square150x150Logo.png" },

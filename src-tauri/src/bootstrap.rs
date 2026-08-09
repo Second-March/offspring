@@ -773,6 +773,22 @@ fn download_and_install_macos(app: &AppHandle) -> Result<PathBuf> {
         ),
     ];
 
+    // Roll the whole bootstrap back if any job fails.
+    //
+    // The jobs run in sequence — FFmpeg, then FFprobe — and each one
+    // used to install straight to its final path. If FFprobe failed, the
+    // function returned Err with FFmpeg already sitting in `bin/`, and
+    // `resolve_ffmpeg` only ever checks for `ffmpeg`: it found the
+    // managed binary, returned early, and the bootstrap never ran again.
+    // The result was a permanently half-installed toolchain where every
+    // probe (duration, dimensions, fps, audio detection) silently
+    // returned nothing, so progress bars, target-size bitrate maths and
+    // Merge's output dimensions were all quietly wrong forever.
+    //
+    // Removing only what THIS run created keeps a pre-existing working
+    // binary untouched.
+    let mut newly_installed: Vec<PathBuf> = Vec::new();
+    let install_all = |newly_installed: &mut Vec<PathBuf>| -> Result<()> {
     for (label, info_url, archive_name, dst) in jobs {
         // --- 1. Resolve the actual download URL + expected hash --------
         emit(
@@ -943,13 +959,18 @@ fn download_and_install_macos(app: &AppHandle) -> Result<PathBuf> {
         let found = find_binary_in(&tmp_extract, archive_name)
             .with_context(|| format!("locating {archive_name} inside extracted archive"))?;
 
-        if dst.exists() {
-            let _ = std::fs::remove_file(&dst);
-        }
+        // Stage the new binary beside its destination and swap it in at
+        // the very end. The old code deleted `dst` first and only then
+        // tried to put the replacement there, so a failure anywhere in
+        // between (cross-volume copy error, disk full, chmod refused)
+        // destroyed the working binary the user started with.
+        let existed_before = dst.exists();
+        let staged = dst.with_extension(format!("new-{}", std::process::id()));
+        let _ = std::fs::remove_file(&staged);
         // Try rename first (cheap when temp dir is on the same volume),
         // fall back to copy across volumes.
-        if std::fs::rename(&found, &dst).is_err() {
-            std::fs::copy(&found, &dst)
+        if std::fs::rename(&found, &staged).is_err() {
+            std::fs::copy(&found, &staged)
                 .with_context(|| format!("copying {archive_name} into bin/"))?;
         }
 
@@ -957,23 +978,56 @@ fn download_and_install_macos(app: &AppHandle) -> Result<PathBuf> {
         // mode bits from arbitrary archives, so the extracted binary
         // lands without the executable bit set. Without this, every
         // subprocess spawn would fail with EACCES.
+        //
+        // Applied to the staged copy so the file is already executable
+        // at the instant it becomes visible at its final path.
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&dst)
-            .with_context(|| format!("statting {}", dst.display()))?
+        let mut perms = std::fs::metadata(&staged)
+            .with_context(|| format!("statting {}", staged.display()))?
             .permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&dst, perms)
-            .with_context(|| format!("chmod +x on {}", dst.display()))?;
+        std::fs::set_permissions(&staged, perms)
+            .with_context(|| format!("chmod +x on {}", staged.display()))?;
+
+        // Rename onto the destination — atomic on Unix, and it replaces
+        // any existing file in one step.
+        std::fs::rename(&staged, &dst)
+            .with_context(|| format!("installing {archive_name} into bin/"))?;
+        if !existed_before {
+            newly_installed.push(dst.clone());
+        }
 
         // Cleanup best-effort
         let _ = std::fs::remove_file(&tmp_zip);
         let _ = std::fs::remove_dir_all(&tmp_extract);
+    }
+    Ok(())
+    };
+
+    if let Err(e) = install_all(&mut newly_installed) {
+        for p in &newly_installed {
+            let _ = std::fs::remove_file(p);
+        }
+        return Err(e);
     }
 
     if !bin_exe.exists() {
         bail!(
             "ffmpeg binary missing after extraction: expected {}",
             bin_exe.display()
+        );
+    }
+    // Both binaries are required. Bail (after the rollback above has
+    // already run for the failure case) rather than leaving a state that
+    // looks installed to `resolve_ffmpeg` but has no probe available.
+    let probe_exe = bin_dir.join("ffprobe");
+    if !probe_exe.exists() {
+        for p in &newly_installed {
+            let _ = std::fs::remove_file(p);
+        }
+        bail!(
+            "ffprobe binary missing after extraction: expected {}",
+            probe_exe.display()
         );
     }
     Ok(bin_exe)

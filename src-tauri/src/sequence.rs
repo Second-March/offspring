@@ -185,11 +185,6 @@ pub fn detect_cached(
     })
 }
 
-pub fn detect(path: &Path, min_digits: u32) -> Option<SequenceInfo> {
-    let mut cache = DirCache::new();
-    detect_cached(path, min_digits, &mut cache)
-}
-
 /// Split `"render_0042"` into `("render_", "0042")`. Returns None for
 /// names that don't end in at least one ASCII digit. The digit run is
 /// greedy — `v002_0042` splits into `("v002_", "0042")`, not `("v", "0020042")`.
