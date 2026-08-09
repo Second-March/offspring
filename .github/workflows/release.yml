@@ -52,6 +52,26 @@ jobs:
         shell: bash
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
+      # Every artifact is NAMED from package.json (Offspring-Setup-<v>.exe)
+      # but the release is TAGGED from the pushed ref. Nothing checked that
+      # those agreed, so pushing v0.5.3 without bumping package.json
+      # published a "v0.5.3" release full of files called
+      # Offspring-Setup-0.5.2.exe — and the in-app updater compares the tag
+      # to the running version, so it would offer an update that installs
+      # the same build the user already has. Fail before anything is built.
+      - name: Verify tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="${{ steps.ver.outputs.version }}"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $pkg_version." \
+                 "Bump the version (tools/bump-version.ps1) and re-tag."
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME matches package.json ($pkg_version)."
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -127,6 +147,12 @@ jobs:
           $pw = [System.Text.Encoding]::UTF8.GetString(
             [Convert]::FromBase64String($env:MSIX_PFX_PASSWORD_B64)
           )
+          # Register the DECODED password with the log masker. GitHub
+          # only auto-masks the literal secret values it knows about —
+          # here that's the base64 form — so the plaintext we derive from
+          # it is unmasked, and any later step that happens to echo the
+          # environment would print it to a public log in the clear.
+          Write-Host "::add-mask::$pw"
           "OFFSPRING_PFX_PASSWORD=$pw" >> $env:GITHUB_ENV
           # Thumbprint only — identifies WHICH cert signed the release
           # without revealing key material, so a mismatch between what

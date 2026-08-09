@@ -9,7 +9,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::*;
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
 use crate::presets::read_exe_path;
 
@@ -38,6 +40,38 @@ pub fn items_to_paths(items: Option<&IShellItemArray>) -> Vec<PathBuf> {
     out
 }
 
+/// Surface a failed `CreateProcess` instead of swallowing it.
+///
+/// Every launcher below used to end in `let _ = cmd.spawn();`. When the
+/// spawn failed — offspring.exe uninstalled or moved while the stale
+/// `ExePath` registry value still pointed at it, or blocked by policy —
+/// the menu entry simply did nothing, forever, with no way for the user
+/// to tell that anything was wrong.
+///
+/// A message box is the only channel available from inside Explorer's
+/// process, and this only fires on a genuinely broken install, not on
+/// any normal path.
+fn report_spawn_failure(result: std::io::Result<std::process::Child>, exe: &str) {
+    let Err(e) = result else { return };
+    let text = format!(
+        "Offspring couldn't start.\n\n{}\n\nTried to run:\n{}\n\n\
+         Reinstalling Offspring will repair this.",
+        e, exe
+    );
+    let mut text_w: Vec<u16> = text.encode_utf16().collect();
+    text_w.push(0);
+    let mut caption_w: Vec<u16> = "Offspring".encode_utf16().collect();
+    caption_w.push(0);
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text_w.as_ptr()),
+            PCWSTR(caption_w.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
 pub fn spawn_preset(preset_id: &str, files: &[PathBuf]) {
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
@@ -45,7 +79,7 @@ pub fn spawn_preset(preset_id: &str, files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_custom(files: &[PathBuf]) {
@@ -55,7 +89,7 @@ pub fn spawn_custom(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_merge(files: &[PathBuf]) {
@@ -65,7 +99,7 @@ pub fn spawn_merge(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_grayscale(files: &[PathBuf]) {
@@ -75,7 +109,7 @@ pub fn spawn_grayscale(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_compare(files: &[PathBuf]) {
@@ -85,7 +119,7 @@ pub fn spawn_compare(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_overlay(files: &[PathBuf]) {
@@ -95,7 +129,7 @@ pub fn spawn_overlay(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_trim(files: &[PathBuf]) {
@@ -105,7 +139,7 @@ pub fn spawn_trim(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_invert(files: &[PathBuf]) {
@@ -115,7 +149,7 @@ pub fn spawn_invert(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_make_square(files: &[PathBuf]) {
@@ -125,7 +159,7 @@ pub fn spawn_make_square(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 pub fn spawn_modify(files: &[PathBuf]) {
@@ -135,7 +169,7 @@ pub fn spawn_modify(files: &[PathBuf]) {
     for f in files {
         cmd.arg(f);
     }
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }
 
 /// Launch the main Offspring UI (the Settings window). No file args —
@@ -145,5 +179,5 @@ pub fn spawn_settings() {
     let Some(exe) = read_exe_path() else { return };
     let mut cmd = Command::new(&exe);
     cmd.arg("settings");
-    let _ = cmd.spawn();
+    report_spawn_failure(cmd.spawn(), &exe);
 }

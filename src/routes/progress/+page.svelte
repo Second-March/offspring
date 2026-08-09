@@ -56,7 +56,11 @@
 
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
   let stallTimer: ReturnType<typeof setTimeout> | null = null;
-  let didStart = false;
+  // `$state` because the template reads it. It happens to render
+  // correctly today only because `phase` is assigned in the same batch
+  // and drags the re-render along with it; as a plain `let` this is one
+  // refactor away from a label that never updates.
+  let didStart = $state(false);
 
   async function closeWindow() {
     // Try a graceful close first. If that fails — Tauri ACL rejection,
@@ -333,28 +337,37 @@
         return;
       }
 
-      phase = isTrim
-        ? "starting trim"
-        : isMerge
-          ? "starting merge"
-          : isGrayscale
-            ? "starting greyscale"
-            : isCompareGridFromUrl
-              ? "starting compare grid"
-              : isCompare
-                ? "starting compare"
-                : isOverlay
-                  ? "starting overlay"
-                  : isInvert
-                    ? "starting invert"
-                    : isMakeSquare
-                      ? "starting make square"
-                      : isModifyFromUrl
-                        ? "starting modify"
-                        : "starting encode";
+      // Mode resolution, most-explicit first.
+      //
+      // The `?mode=` parameter is set by the dialog that navigated us
+      // here THIS time, so it is unambiguous. The is* flags below it come
+      // from process-global "pending" state on the Rust side, which
+      // outlives the job that set it — so a leftover `pending_grayscale`
+      // used to be matched before `mode=modify` and quietly ran the wrong
+      // tool on the user's files. Explicit mode always wins.
+      const mode: string = isTrim
+        ? "trim"
+        : isCompareGridFromUrl
+          ? "compare-grid"
+          : isModifyFromUrl
+            ? "modify"
+            : isMerge
+              ? "merge"
+              : isGrayscale
+                ? "greyscale"
+                : isCompare
+                  ? "compare"
+                  : isOverlay
+                    ? "overlay"
+                    : isInvert
+                      ? "invert"
+                      : isMakeSquare
+                        ? "make-square"
+                        : "encode";
+      phase = `starting ${mode}`;
       armStallTimer();
       didStart = true;
-      if (isTrim) {
+      if (mode === "trim") {
         // A trim job is valid if it strips ANY frames OR cuts a middle
         // range. Both being absent means the user invoked the route
         // directly without filling out the dialog.
@@ -366,13 +379,13 @@
           return;
         }
         await api.encodeTrim(files, trimStart, trimEnd, trimRemoveFrom, trimRemoveTo);
-      } else if (isMerge) {
+      } else if (mode === "merge") {
         // Merge derives its own settings from the first file — no
         // preset is sent through the wire.
         await api.encodeMerge(files);
-      } else if (isGrayscale) {
+      } else if (mode === "greyscale") {
         await api.encodeGrayscale(files);
-      } else if (isCompareGridFromUrl) {
+      } else if (mode === "compare-grid") {
         // Compare-grid: cols + layout came in via URL params from the
         // /compare-grid/ dialog. Files were stashed in app state via
         // prepareCompareGridEncode before the dialog's goto() call.
@@ -383,15 +396,15 @@
           return;
         }
         await api.encodeCompareGrid(files, compareGridCols, compareGridLayout);
-      } else if (isCompare) {
+      } else if (mode === "compare") {
         await api.encodeCompare(files);
-      } else if (isOverlay) {
+      } else if (mode === "overlay") {
         await api.encodeOverlay(files);
-      } else if (isInvert) {
+      } else if (mode === "invert") {
         await api.encodeInvert(files);
-      } else if (isMakeSquare) {
+      } else if (mode === "make-square") {
         await api.encodeMakeSquare(files);
-      } else if (isModifyFromUrl) {
+      } else if (mode === "modify") {
         // crop_w / crop_h == 0 is allowed — means "no crop, just the
         // other transforms". Backend rejects only the case where
         // EVERY transform is off.

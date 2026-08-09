@@ -34,7 +34,16 @@ const BATCH_DEBOUNCE: Duration = Duration::from_millis(500);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let raw_argv: Vec<String> = std::env::args().collect();
+    // `args()` PANICS on an argument that isn't valid Unicode, and it
+    // does so before anything has had a chance to run — no log line, no
+    // window, no argv forwarded to the primary instance. Explorer hands
+    // us whatever the user's filenames actually contain (a lone
+    // surrogate from a file created by a misbehaving tool is enough), so
+    // this is reachable from a right-click on the wrong file. `args_os`
+    // never panics; lossy-converting keeps the debug dump readable.
+    let raw_argv: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     // Redact file paths in the log dump — argv from a right-click drops
     // the absolute paths of every selected file, which is more
     // information than the debug log should retain. `redact_argv` keeps
@@ -50,7 +59,25 @@ pub fn run() {
     match &args.command {
         Some(Command::FirstRun) => {
             dlog!("FirstRun fast-path");
-            let ps = presets::load_presets().unwrap_or_else(|_| defaults::default_presets());
+            // The installer runs `first-run` on every install AND every
+            // upgrade, so this path sees existing users' data. Reading
+            // presets.json can fail for reasons that are recoverable by
+            // hand (a truncated tail, one bad character); writing
+            // defaults straight over it, as this used to, destroyed the
+            // only copy. Set the bad file aside first so it can be
+            // salvaged, and only then seed defaults.
+            let ps = match presets::load_presets() {
+                Ok(ps) => ps,
+                Err(e) => {
+                    let path = paths::presets_path().ok();
+                    let moved = path.as_deref().and_then(presets::quarantine_unreadable);
+                    dlog!(
+                        "FirstRun: presets unreadable ({e:#}); kept a copy at {:?}, seeding defaults",
+                        moved
+                    );
+                    defaults::default_presets()
+                }
+            };
             let _ = presets::save_presets(&ps);
             let settings = presets::load_settings().unwrap_or_default();
             let _ = integration::sync_all(&ps, &settings);

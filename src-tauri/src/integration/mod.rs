@@ -54,6 +54,13 @@ use crate::presets::{Preset, Settings};
 /// cleans up immediately instead of at uninstall time.
 #[cfg(windows)]
 pub fn sync_all(presets: &[Preset], settings: &Settings) -> Result<()> {
+    // Publish our exe path first, whichever menu surface ends up active.
+    // The MSIX shell-extension DLL reads it to find offspring.exe, and
+    // it used to be written only by `context_menu::sync` — which does
+    // not run at all while the modern menu is enabled. Best-effort: a
+    // failure here shouldn't stop the menus themselves from syncing.
+    let _ = context_menu::publish_exe_path();
+
     // Modern menu and classic menu are mutually exclusive. If we wrote both,
     // Windows 11 would show the modern entry at the top level AND the
     // classic submenu under "Show more options" — same app, two menus. The
@@ -112,7 +119,7 @@ pub fn cleanup_all() -> Result<()> {
     // per-feature cleanups leave it alone so toggling a surface off
     // doesn't break the others.
     let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
-    let _ = hkcu.delete_subkey_all(r"Software\Offspring");
+    let _ = hkcu.delete_subkey_all(context_menu::APP_ROOT_KEY);
     Ok(())
 }
 

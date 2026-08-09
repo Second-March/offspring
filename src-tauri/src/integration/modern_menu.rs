@@ -186,15 +186,39 @@ pub fn sync(_presets: &[Preset], settings: &Settings) -> Result<()> {
         }
     }
 
-    // 2. Register everything we want. Skip files that aren't shipped
-    //    (dev builds may not have run the MSIX pipeline) rather than
-    //    erroring — the toggle save shouldn't blow up on developers.
+    // 2. Register everything we want.
+    //
+    //    A missing .msix is skipped rather than erroring per-package —
+    //    dev builds may not have run the MSIX pipeline, and the split /
+    //    unified pair can legitimately be half-present mid-transition.
+    //    But if NOTHING got registered we must NOT return Ok: the
+    //    caller (`integration::sync_all`) has already torn down the
+    //    classic menu at this point and relies on an Err to put it
+    //    back. Returning Ok here left the user with no right-click menu
+    //    at all and no message — the exact failure the self-heal in
+    //    `sync_all` was written to prevent. The installer ships these
+    //    files with `skipifsourcedoesntexist`, so a build that skipped
+    //    the MSIX step reaches real users this way, not just developers.
+    let mut registered = 0usize;
+    let mut missing: Vec<&str> = Vec::new();
     for pkg in wanted {
         let msix = dir.join(pkg.msix);
         if !msix.exists() {
+            missing.push(pkg.msix);
             continue;
         }
         register_package(&msix, &dir)?;
+        registered += 1;
+    }
+    if registered == 0 {
+        return Err(anyhow!(
+            "the Windows 11 modern menu can't be installed — its package file{} ({}) {} \
+             missing from {}. The classic right-click menu has been kept instead.",
+            if missing.len() == 1 { "" } else { "s" },
+            missing.join(", "),
+            if missing.len() == 1 { "is" } else { "are" },
+            dir.display()
+        ));
     }
     Ok(())
 }

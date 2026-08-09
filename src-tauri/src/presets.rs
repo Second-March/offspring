@@ -963,6 +963,34 @@ impl Default for OverlayTool {
     }
 }
 
+/// Move a file we failed to parse out of the way, returning where it
+/// went. Used before seeding defaults over a config file that exists
+/// but doesn't deserialize: the user's data may be recoverable by hand
+/// (one bad character, a truncated tail), and silently replacing it
+/// with defaults destroys the only copy.
+///
+/// Best-effort by design — if the rename fails there is nothing useful
+/// to do about it, and the caller still needs to carry on with defaults.
+pub fn quarantine_unreadable(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !path.exists() {
+        return None;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("json")
+        .to_string();
+    let backup = path.with_extension(format!("corrupt-{stamp}.{ext}"));
+    match std::fs::rename(path, &backup) {
+        Ok(()) => Some(backup),
+        Err(_) => None,
+    }
+}
+
 pub fn load_presets() -> Result<Vec<Preset>> {
     let path = paths::presets_path()?;
     if !path.exists() {
@@ -975,11 +1003,56 @@ pub fn load_presets() -> Result<Vec<Preset>> {
     Ok(presets)
 }
 
+/// Write `json` to `path` without ever leaving a truncated file behind.
+///
+/// `std::fs::write` opens with `O_TRUNC`: the old contents are gone the
+/// instant the call starts, and anything that interrupts the write —
+/// a crash, a power cut, a full disk — leaves an empty or half-written
+/// file where the user's entire preset list used to be. There is no
+/// backup to fall back on.
+///
+/// Writing a sibling temp file and renaming over the target instead
+/// makes the swap atomic from every observer's point of view. That
+/// matters twice over here: the shell-extension DLL reads these same
+/// files from inside Explorer while the app is running, and with a
+/// truncating write it could sample a partial file and render an empty
+/// Offspring flyout.
+///
+/// The temp file is a sibling (not `%TEMP%`) so the rename stays within
+/// one filesystem, which is what keeps it atomic.
+fn write_json_atomic(path: &std::path::Path, json: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+
+    // Scoped so the handle is closed before the rename — Windows
+    // refuses to rename a file that still has an open handle.
+    {
+        let mut f = std::fs::File::create(&tmp)
+            .with_context(|| format!("creating {}", tmp.display()))?;
+        f.write_all(json.as_bytes())
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        // Force the bytes out before the rename publishes the file, so a
+        // crash can't leave the directory entry pointing at empty data.
+        f.sync_all()
+            .with_context(|| format!("flushing {}", tmp.display()))?;
+    }
+
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("replacing {}", path.display()));
+    }
+    Ok(())
+}
+
 pub fn save_presets(presets: &[Preset]) -> Result<()> {
     let path = paths::presets_path()?;
     let json = serde_json::to_string_pretty(presets)?;
-    std::fs::write(&path, json)?;
-    Ok(())
+    write_json_atomic(&path, &json)
 }
 
 pub fn load_settings() -> Result<Settings> {
@@ -995,8 +1068,7 @@ pub fn load_settings() -> Result<Settings> {
 pub fn save_settings(s: &Settings) -> Result<()> {
     let path = paths::settings_path()?;
     let json = serde_json::to_string_pretty(s)?;
-    std::fs::write(&path, json)?;
-    Ok(())
+    write_json_atomic(&path, &json)
 }
 
 pub fn load_custom_last() -> Result<Preset> {
@@ -1012,8 +1084,7 @@ pub fn load_custom_last() -> Result<Preset> {
 pub fn save_custom_last(p: &Preset) -> Result<()> {
     let path = paths::custom_last_path()?;
     let json = serde_json::to_string_pretty(p)?;
-    std::fs::write(&path, json)?;
-    Ok(())
+    write_json_atomic(&path, &json)
 }
 
 pub fn load_trim_last() -> Result<TrimLast> {
@@ -1029,6 +1100,5 @@ pub fn load_trim_last() -> Result<TrimLast> {
 pub fn save_trim_last(t: &TrimLast) -> Result<()> {
     let path = paths::trim_last_path()?;
     let json = serde_json::to_string_pretty(t)?;
-    std::fs::write(&path, json)?;
-    Ok(())
+    write_json_atomic(&path, &json)
 }

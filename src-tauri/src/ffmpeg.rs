@@ -385,8 +385,8 @@ fn crop_expr(c: &Crop) -> &'static str {
     }
 }
 
-fn scale_expr(preset: &Preset) -> Option<String> {
-    match (preset.width, preset.height) {
+fn scale_expr(width: Option<u32>, height: Option<u32>) -> Option<String> {
+    match (width, height) {
         (Some(w), Some(h)) => Some(format!("scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2")),
         (Some(w), None) => Some(format!("scale={w}:-2:flags=lanczos")),
         (None, Some(h)) => Some(format!("scale=-2:{h}:flags=lanczos")),
@@ -395,6 +395,18 @@ fn scale_expr(preset: &Preset) -> Option<String> {
 }
 
 fn build_filter_chain(preset: &Preset) -> String {
+    build_filter_chain_with_width(preset, None)
+}
+
+/// Same chain as [`build_filter_chain`], but with the preset's target
+/// width overridden. The GIF size-target loop re-encodes at
+/// progressively smaller widths to hit `target_max_mb`, and it needs
+/// every other filter — crop rect, rotation, flips, reverse, speed —
+/// to stay identical across those attempts. Building both from one
+/// function is what keeps the GIF path from quietly diverging from the
+/// MP4/ProRes/image paths: it used to hand-roll its own chain and so
+/// dropped every Modify-tool transform on the floor.
+fn build_filter_chain_with_width(preset: &Preset, width_override: Option<u32>) -> String {
     let mut parts: Vec<String> = Vec::new();
     // Free-form crop rectangle from the Crop tool runs FIRST so every
     // subsequent filter (fps, scale, grayscale, etc.) sees only the
@@ -409,7 +421,7 @@ fn build_filter_chain(preset: &Preset) -> String {
     if let Some(ref c) = preset.crop {
         parts.push(crop_expr(c).to_string());
     }
-    if let Some(s) = scale_expr(preset) {
+    if let Some(s) = scale_expr(width_override.or(preset.width), preset.height) {
         parts.push(s);
     }
     if preset.grayscale.unwrap_or(false) {
@@ -535,12 +547,60 @@ fn atempo_chain(speed: f32) -> Vec<String> {
     out
 }
 
-/// Burn-in drawtext for the current frame number. Uses Windows'
-/// stock Consolas font — guaranteed on Win7+, zero-byte bundle cost.
-/// The `:` in the `C:/...` path is ffmpeg's parameter separator, so
-/// we escape it with `\:` (written `\\:` in the Rust source).
+/// Monospaced font for every `drawtext` burn-in (timecode, guide
+/// labels, overlay text), as a ready-to-splice `fontfile='…':` fragment.
+///
+/// This used to be a hard-coded `C:/Windows/Fonts/consola.ttf` in all
+/// three call sites, which meant Timecode, Guides and Overlay text
+/// aborted the whole encode on the shipped macOS build — drawtext fails
+/// the filter graph outright when `fontfile` points at nothing.
+///
+/// Resolution order per platform, first hit wins; all are OS-stock so
+/// there's still no bundle cost. If nothing matches we emit an empty
+/// fragment, which leaves drawtext on its own fontconfig default rather
+/// than a path we know is wrong.
+///
+/// The `:` in a Windows `C:/…` path is ffmpeg's own parameter
+/// separator, so it has to be escaped as `\:` inside the filter string.
+fn drawtext_fontfile() -> &'static str {
+    static FONT_FRAGMENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FONT_FRAGMENT.get_or_init(|| {
+        #[cfg(windows)]
+        const CANDIDATES: &[&str] = &[
+            r"C:\Windows\Fonts\consola.ttf",
+            r"C:\Windows\Fonts\cour.ttf",
+            r"C:\Windows\Fonts\arial.ttf",
+        ];
+        #[cfg(target_os = "macos")]
+        const CANDIDATES: &[&str] = &[
+            "/System/Library/Fonts/SFNSMono.ttf",
+            "/System/Library/Fonts/Menlo.ttc",
+            "/System/Library/Fonts/Monaco.ttf",
+            "/System/Library/Fonts/Supplemental/Courier New.ttf",
+            "/Library/Fonts/Arial.ttf",
+        ];
+        #[cfg(not(any(windows, target_os = "macos")))]
+        const CANDIDATES: &[&str] = &[
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        ];
+
+        match CANDIDATES.iter().find(|p| Path::new(p).exists()) {
+            // Forward slashes keep the path free of backslash escapes;
+            // ffmpeg accepts them on Windows. The drive-letter colon
+            // still needs escaping.
+            Some(p) => format!("fontfile='{}':", p.replace('\\', "/").replace(':', "\\:")),
+            None => String::new(),
+        }
+    })
+}
+
+/// Burn-in drawtext for the current frame number.
 fn timecode_filter() -> String {
-    r"drawtext=fontfile='C\:/Windows/Fonts/consola.ttf':text='%{frame_num}':fontcolor=white:fontsize=h/20:x=12:y=12:box=1:boxcolor=black@0.55:boxborderw=6".to_string()
+    format!(
+        "drawtext={}text='%{{frame_num}}':fontcolor=white:fontsize=h/20:x=12:y=12:box=1:boxcolor=black@0.55:boxborderw=6",
+        drawtext_fontfile()
+    )
 }
 
 /// drawbox + drawtext filters for the guide boxes. One box per enabled
@@ -644,7 +704,8 @@ fn guide_box_with_label(ratio: &str, label: &str, color: &str) -> Vec<String> {
     let x_expr = format!("(W-{bw})/2+{bw}-tw-8");
     let y_expr = format!("(H-{bh})/2+6");
     let label_filter = format!(
-        "drawtext=fontfile='C\\:/Windows/Fonts/consola.ttf':text='{text}':fontcolor={c}:fontsize=h/40:x={x}:y={y}:box=1:boxcolor=black@0.45:boxborderw=3",
+        "drawtext={font}text='{text}':fontcolor={c}:fontsize=h/40:x={x}:y={y}:box=1:boxcolor=black@0.45:boxborderw=3",
+        font = drawtext_fontfile(),
         text = label_escaped,
         c = color,
         x = x_expr,
@@ -801,7 +862,8 @@ fn overlay_drawtext(
     // otherwise be filter-grammar separators here.
     let color_clean = sanitize_color(color);
     format!(
-        "drawtext=fontfile='C\\:/Windows/Fonts/consola.ttf':text='{text}':fontcolor={color}@{a:.2}:fontsize=h/{font_div:.2}:x={x}:y={y}:box=1:boxcolor=black@{box_a:.2}:boxborderw={box_bw}",
+        "drawtext={font}text='{text}':fontcolor={color}@{a:.2}:fontsize=h/{font_div:.2}:x={x}:y={y}:box=1:boxcolor=black@{box_a:.2}:boxborderw={box_bw}",
+        font = drawtext_fontfile(),
         text = text_expr,
         color = color_clean,
         a = a,
@@ -811,19 +873,48 @@ fn overlay_drawtext(
     )
 }
 
-/// Escape a literal string for drawtext `text='...'`. We wrap text in
-/// single quotes in the filter, so we escape: backslash, single-quote,
-/// colon (ffmpeg param separator), percent (format expansion), comma
-/// (filter-graph separator).
+/// Escape a literal string for drawtext `text='...'`.
+///
+/// The caller wraps the result in single quotes, and ffmpeg unescapes
+/// it TWICE on the way in: once when the filtergraph parser splits the
+/// chain into filters and options, and again inside drawtext's own text
+/// expander. Escaping for only the first pass — which is what this used
+/// to do — is wrong in three distinct ways:
+///
+///   * `'` → `\'` does not close the quoted section, so ffmpeg's
+///     tokenizer swallows the rest of the graph. A file named
+///     `Bob's demo.mp4` with the filename overlay enabled took the
+///     whole encode down. (Because a later unquoted `,` can then be
+///     read as a filter separator, this was also a filter-injection
+///     surface: a crafted filename could append options of its own.)
+///   * `%` → `\%` loses its backslash to the first pass, so drawtext's
+///     expander sees a bare `%` and rejects it as a stray format spec.
+///   * `\` → `\\` collapses to a single backslash for the same reason,
+///     which the expander then treats as an escape.
+///
+/// The escapes below are the ones that survive both passes. Verified
+/// against ffmpeg's tokenizer: `it's` → `it's`, `50%` → `50%`,
+/// `C:/dir` → `C:/dir`, `a,b` → `a,b`.
+///
+/// Only for LITERAL text. Deliberate expansions like `%{frame_num}` are
+/// written straight into the filter string and must not come through
+/// here.
 fn escape_drawtext_literal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
+    let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
         match c {
-            '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
-            ':' => out.push_str("\\:"),
-            '%' => out.push_str("\\%"),
-            ',' => out.push_str("\\,"),
+            // Close the quoted section, emit an escaped literal quote,
+            // reopen it. `\'` on its own is NOT an escape inside a
+            // quoted ffmpeg token.
+            '\'' => out.push_str(r"'\\\''"),
+            // Doubled so one backslash survives the option pass and
+            // reaches drawtext's expander as an escape for the next.
+            '\\' => out.push_str(r"\\\\"),
+            '%' => out.push_str(r"\\%"),
+            // Consumed by the option pass only — the expander has no
+            // meaning for these.
+            ':' => out.push_str(r"\:"),
+            ',' => out.push_str(r"\,"),
             _ => out.push(c),
         }
     }
@@ -843,7 +934,17 @@ fn dither_arg(d: &Dither, bayer_scale: Option<u32>) -> String {
 /// Parse ffmpeg bitrate strings like "128k", "2M", "500000" into kbit/s.
 fn parse_kbps(s: &str) -> u32 {
     let t = s.trim();
-    let (num, suffix) = t.split_at(t.len().saturating_sub(1));
+    // Split on the last CHARACTER, not the last byte. `split_at` panics
+    // when the index isn't a UTF-8 boundary, and the bitrate strings
+    // come from a free-text preset field — a stray multi-byte character
+    // ("128 кбит", a smart quote) would abort the process outright,
+    // since the release profile is `panic = "abort"`.
+    let split_at = t
+        .char_indices()
+        .next_back()
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let (num, suffix) = t.split_at(split_at);
     match suffix {
         "k" | "K" => num.parse::<u32>().unwrap_or(0),
         "m" | "M" => num.parse::<u32>().unwrap_or(0).saturating_mul(1000),
@@ -988,6 +1089,7 @@ fn source_has_alpha(ffmpeg: &Path, input: &EncodeInput) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn encode_file(
     ffmpeg: &Path,
     input: &EncodeInput,
@@ -996,9 +1098,36 @@ pub fn encode_file(
     duration_s: Option<f64>,
     file_index: usize,
     total_files: usize,
+    on_progress: impl FnMut(ProgressEvent),
+) -> Result<PathBuf> {
+    encode_file_to(
+        ffmpeg, input, preset, settings, duration_s, file_index, total_files, None, on_progress,
+    )
+}
+
+/// [`encode_file`] with an explicit destination.
+///
+/// The destination's EXTENSION is what selects ffmpeg's muxer, so this
+/// is how the Modify tool's "overwrite original" path keeps a `.mkv`
+/// source a real Matroska file instead of muxing MP4 and renaming the
+/// result on top of it. Pass `None` for `out_override` to get the
+/// derived `<stem><suffix>.<format-ext>` destination.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_file_to(
+    ffmpeg: &Path,
+    input: &EncodeInput,
+    preset: &Preset,
+    settings: &Settings,
+    duration_s: Option<f64>,
+    file_index: usize,
+    total_files: usize,
+    out_override: Option<PathBuf>,
     mut on_progress: impl FnMut(ProgressEvent),
 ) -> Result<PathBuf> {
-    let out = output_path(input, preset);
+    let out = match out_override {
+        Some(p) => p,
+        None => output_path(input, preset),
+    };
     let verbosity = settings.verbosity.clone().unwrap_or_else(|| "warning".into());
     let target_mb = preset.target_max_mb;
     let input_display = input.display();
@@ -1038,10 +1167,24 @@ pub fn encode_file(
                     break;
                 }
 
-                // Shrink width for next pass. Starting width is either the
-                // explicit width_override or a fallback (500 is a reasonable
-                // GIF default).
-                let current_w = width_override.unwrap_or(500) as f64;
+                // Shrink width for the next pass, measured against the
+                // width we ACTUALLY just produced rather than a guess.
+                //
+                // This used to fall back to a hard-coded 500 whenever the
+                // preset carried no explicit width — i.e. for every
+                // "keep the source size" GIF preset with a target size.
+                // On a 1920-wide source that made the second attempt
+                // shrink from an imagined 500px and overshoot wildly; on
+                // a 320-wide source it computed a LARGER width than the
+                // source and upscaled, and the `new_w >= current_w` guard
+                // compared against the fiction too, so the loop couldn't
+                // even tell it was going backwards. Probing the output we
+                // have on disk is exact and accounts for crop, rotation
+                // and scale all at once.
+                let current_w = probe_dimensions(ffmpeg, &out)
+                    .map(|(w, _)| w as f64)
+                    .or_else(|| width_override.map(|w| w as f64))
+                    .unwrap_or(500.0);
                 let ratio = (target_bytes as f64 / actual_bytes as f64).sqrt();
                 let new_w = (current_w * ratio * 0.9).max(120.0) as u32;
                 if new_w >= current_w as u32 {
@@ -1502,6 +1645,70 @@ pub fn cleanup_partial_output(out: &Path) {
     }
 }
 
+/// Run a command that produces no `-progress` stream, staying
+/// responsive to the ✕ button and surfacing stderr on failure.
+///
+/// The blocking `Command::status()` this replaces had two problems: the
+/// user's cancel was ignored for the entire run (the GIF palette pass
+/// runs the full filter chain, so with `reverse` or `minterpolate` in
+/// play that is not a quick pass), and stderr went to `Stdio::null()`,
+/// leaving a bare "palette pass failed" with nothing to act on.
+///
+/// The caller must have set `stderr(Stdio::piped())` for the diagnostic
+/// half to do anything; a drain thread keeps the pipe from filling up
+/// and blocking the child.
+fn run_quiet_cancellable(mut cmd: Command, what: &str) -> Result<()> {
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawning ffmpeg for {what}"))?;
+
+    let stderr_thread = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            BufReader::new(stderr)
+                .lines()
+                .map_while(|l| l.ok())
+                .collect::<Vec<String>>()
+        })
+    });
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if is_cancelled() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    bail!("Encode cancelled.");
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => return Err(e).with_context(|| format!("waiting on ffmpeg {what}")),
+        }
+    };
+
+    let stderr_lines = stderr_thread
+        .map(|t| t.join().unwrap_or_default())
+        .unwrap_or_default();
+
+    if !status.success() {
+        let tail = stderr_lines
+            .iter()
+            .rev()
+            .take(15)
+            .rev()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary = if tail.is_empty() {
+            "(no stderr captured)".to_string()
+        } else {
+            tail
+        };
+        bail!("{what} failed\n--- last stderr lines ---\n{summary}");
+    }
+    Ok(())
+}
+
 fn run_with_progress(
     mut cmd: Command,
     duration_s: Option<f64>,
@@ -1516,6 +1723,20 @@ fn run_with_progress(
     // this the user sees a bare exit code like "0xdfaba7bb" and we
     // have nothing to diagnose with. A background thread drains the
     // pipe so it doesn't fill up and block ffmpeg's writes.
+    // The stall watchdog below measures the gap between `-progress`
+    // lines, so it only means anything for commands that actually asked
+    // ffmpeg for a progress stream. The still-image branch deliberately
+    // doesn't (a one-frame encode has no `out_time_ms` to scrub), and
+    // ffmpeg emits nothing at all while it sits inside the encoder — so
+    // arming the watchdog there killed every image encode that took
+    // longer than 90s and deleted its output. AVIF via libaom on a
+    // full-resolution photo does exactly that.
+    //
+    // Reading it off the argv keeps this self-correcting: any command
+    // that opts into `-progress` gets the watchdog, any that doesn't is
+    // left to the ✕ button (polled every second below) and the progress
+    // window's own long-stop timer.
+    let expects_progress = cmd.get_args().any(|a| a == "-progress");
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     hide_console(&mut cmd);
     let mut child = cmd.spawn().context("spawning ffmpeg")?;
@@ -1559,6 +1780,20 @@ fn run_with_progress(
     let mut cancelled = false;
     let mut last_progress = Instant::now();
     loop {
+        // Cancel is checked at the TOP of every iteration, not just in
+        // the timeout arm. ffmpeg's `-progress pipe:1` emits a block of
+        // key=value lines roughly twice a second, so while an encode is
+        // actually running the channel almost always has a line waiting
+        // and `recv_timeout` returns `Ok` before the 1s poll interval
+        // elapses. Polling cancel only in the `Timeout` arm therefore
+        // meant the ✕ button did nothing for the entire duration of a
+        // healthy encode — the flag was only noticed once ffmpeg went
+        // quiet, i.e. usually never.
+        if is_cancelled() {
+            let _ = child.kill();
+            cancelled = true;
+            break;
+        }
         match rx.recv_timeout(FFMPEG_POLL_INTERVAL) {
             Ok(line) => {
                 last_progress = Instant::now();
@@ -1578,21 +1813,14 @@ fn run_with_progress(
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // User cancelled — kill the child IMMEDIATELY. We
-                // don't wait for it to gracefully shut down; ffmpeg
-                // doesn't really do graceful interrupt anyway, and
-                // any partial output is going to be cleaned up by
-                // the caller via `cleanup_partial_output`.
-                if is_cancelled() {
-                    let _ = child.kill();
-                    cancelled = true;
-                    break;
-                }
+                // Cancellation is handled at the top of the loop, which
+                // this arm falls through to on the next iteration.
+                //
                 // No output for FFMPEG_STALL_TIMEOUT → stalled.
                 // Verify the child is still alive before declaring
                 // a stall (narrow race: could have exited just as
                 // the timeout fired and we haven't reaped it yet).
-                if last_progress.elapsed() > FFMPEG_STALL_TIMEOUT {
+                if expects_progress && last_progress.elapsed() > FFMPEG_STALL_TIMEOUT {
                     match child.try_wait() {
                         Ok(Some(_)) => break,           // already exited; fall through
                         Ok(None) => {                    // still running, no output → hung
@@ -1807,38 +2035,18 @@ fn encode_gif_once(
     let palette_colors = preset.palette_colors.unwrap_or(128);
     let dither = preset.dither.clone().unwrap_or(Dither::Bayer);
 
-    // Build filter chain honoring the width override.
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(fps) = preset.fps {
-        parts.push(format!("fps={fps}"));
-    }
-    if let Some(ref c) = preset.crop {
-        parts.push(crop_expr(c).to_string());
-    }
-    match (width_override.or(preset.width), preset.height) {
-        (Some(w), Some(h)) => parts.push(format!(
-            "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
-        )),
-        (Some(w), None) => parts.push(format!("scale={w}:-2:flags=lanczos")),
-        (None, Some(h)) => parts.push(format!("scale=-2:{h}:flags=lanczos")),
-        (None, None) => {}
-    }
-    if preset.grayscale.unwrap_or(false) {
-        // Runs before palettegen so the generated palette contains only
-        // grey tones — avoids spurious colored dithering when the
-        // source happens to have a few stray non-grey pixels.
-        parts.push("format=gray".to_string());
-    }
-    if let Some(ref g) = preset.guides {
-        parts.extend(guides_filters(g));
-    }
-    if let Some(ref o) = preset.overlay {
-        parts.extend(overlay_filters(o));
-    }
-    if preset.timecode.unwrap_or(false) {
-        parts.push(timecode_filter());
-    }
-    let filter = parts.join(",");
+    // Build the filter chain honouring the width override. This MUST go
+    // through the shared builder: the GIF branch previously assembled its
+    // own chain covering only fps/crop/scale/grayscale/guides/overlay/
+    // timecode, which meant every Modify-tool transform — the freehand
+    // crop rect, rotation, flips, reverse, and speed — was silently
+    // dropped for GIF inputs. With "overwrite" ticked that replaced the
+    // user's source GIF with an untransformed re-encode.
+    //
+    // `format=gray` lands mid-chain in the shared builder, still ahead of
+    // the `palettegen` we append below, so a greyscale GIF's palette is
+    // still generated from grey-only pixels.
+    let filter = build_filter_chain_with_width(preset, width_override);
 
     // Pass 1: palette
     //
@@ -1902,7 +2110,11 @@ fn encode_gif_once(
         .arg(&palette_tmp)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Was `Stdio::null()`, which made `palette pass failed` an
+        // undiagnosable dead end — the palette pass runs the same filter
+        // chain as the encode, so it's exactly where a bad filter shows
+        // up first.
+        .stderr(Stdio::piped());
     hide_console(&mut palette_cmd);
     // Delete the palette on every exit from this function (success, error,
     // or panic unwind) so we don't leak temp PNGs across crashed encodes.
@@ -1914,12 +2126,7 @@ fn encode_gif_once(
     }
     let _palette_guard = PaletteGuard(palette_tmp.clone());
 
-    let status = palette_cmd
-        .status()
-        .context("spawning ffmpeg for palette pass")?;
-    if !status.success() {
-        bail!("palette pass failed");
-    }
+    run_quiet_cancellable(palette_cmd, "palette pass")?;
 
     // Pass 2: apply palette
     let filter_complex = format!(
@@ -2037,6 +2244,15 @@ pub struct VideoProbe {
     /// `gbrapf32le`, …). The ProRes branch reads this to decide
     /// whether a 4444 encode needs an alpha plane.
     pub pix_fmt: Option<String>,
+    /// The frame rate WITHOUT the rounding `fps` applies — 29.97 stays
+    /// 29.97 instead of becoming 30.
+    ///
+    /// Anything converting a frame index to a timestamp has to use this
+    /// one. Trim's audio cut points are `frames / fps`, and rounding
+    /// 30000/1001 up to 30 drifts by one frame every 1001, i.e. 0.6s of
+    /// audio lost or desynced over a ten-minute NTSC clip. `fps` stays
+    /// rounded because filters like `fps=` want an integer.
+    pub fps_exact: Option<f64>,
 }
 
 /// Probe the first video stream of `input` for dimensions + fps. Used by
@@ -2053,7 +2269,15 @@ pub fn probe_video(ffmpeg: &Path, input: &Path) -> VideoProbe {
     cmd.args([
         "-v", "error",
         "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,pix_fmt",
+        // `stream_side_data=rotation` matters: a phone shoots portrait
+        // by recording a landscape frame plus a 90° display matrix. The
+        // stream's own width/height are the STORED ones, but ffmpeg's
+        // decoder auto-rotates, so the filter graph — and therefore the
+        // output — is the other way round. Verified against ffprobe:
+        // a file reporting `width=640 height=360 rotation=90` decodes
+        // to a 360x640 frame. Reading only width/height built every
+        // portrait clip's output at landscape dimensions.
+        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,pix_fmt:stream_side_data=rotation",
         "-of", "default=nw=1",
     ])
     .arg(input)
@@ -2064,11 +2288,14 @@ pub fn probe_video(ffmpeg: &Path, input: &Path) -> VideoProbe {
     let text = String::from_utf8_lossy(&out.stdout);
 
     let mut p = VideoProbe::default();
+    let mut rotation: Option<i32> = None;
     for line in text.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
         match k.trim() {
             "width" => p.width = v.trim().parse().ok(),
             "height" => p.height = v.trim().parse().ok(),
+            // May be negative (`-90`) and may exceed one turn.
+            "rotation" => rotation = v.trim().parse::<f64>().ok().map(|r| r.round() as i32),
             "pix_fmt" => {
                 let t = v.trim();
                 if !t.is_empty() && t != "unknown" {
@@ -2080,23 +2307,40 @@ pub fn probe_video(ffmpeg: &Path, input: &Path) -> VideoProbe {
             // that one. GIF files typically only publish r_frame_rate.
             "avg_frame_rate" | "r_frame_rate" => {
                 if p.fps.is_none() {
-                    if let Some((num, den)) = v.trim().split_once('/') {
+                    let exact = if let Some((num, den)) = v.trim().split_once('/') {
                         let n: f64 = num.parse().unwrap_or(0.0);
                         let d: f64 = den.parse().unwrap_or(0.0);
                         if d > 0.0 && n > 0.0 {
-                            p.fps = Some((n / d).round() as u32);
+                            Some(n / d)
+                        } else {
+                            None
                         }
-                    } else if let Ok(n) = v.trim().parse::<f64>() {
-                        if n > 0.0 {
-                            p.fps = Some(n.round() as u32);
-                        }
+                    } else {
+                        v.trim().parse::<f64>().ok().filter(|n| *n > 0.0)
+                    };
+                    if let Some(exact) = exact {
+                        p.fps = Some(exact.round() as u32);
+                        p.fps_exact = Some(exact);
                     }
                 }
             }
             _ => {}
         }
     }
+    // A quarter-turn display matrix swaps the presented dimensions.
+    if swaps_dimensions(rotation) {
+        std::mem::swap(&mut p.width, &mut p.height);
+    }
     p
+}
+
+/// Does this display-matrix rotation (degrees; may be negative, and may
+/// exceed one turn) present the frame with width and height swapped?
+fn swaps_dimensions(rotation: Option<i32>) -> bool {
+    match rotation {
+        Some(r) => r.rem_euclid(180) == 90,
+        None => false,
+    }
 }
 
 /// Probe whether `input` has at least one audio stream. Used by the
@@ -2734,18 +2978,18 @@ fn build_video_chop_filter(intervals: &[(u64, u64)]) -> String {
 /// video at the boundary frames. The `aselect`/`between(t,…)` form
 /// works on container timestamps; `asetpts=N/SR/TB` rewrites them to
 /// the kept span's local time.
-fn build_audio_chop_filter(intervals: &[(u64, u64)], fps: u32) -> String {
+fn build_audio_chop_filter(intervals: &[(u64, u64)], fps: f64) -> String {
     if intervals.len() == 1 {
         let (a, b) = intervals[0];
-        let start_s = a as f64 / fps as f64;
-        let end_s = b as f64 / fps as f64;
+        let start_s = a as f64 / fps;
+        let end_s = b as f64 / fps;
         return format!("atrim=start={start_s:.6}:end={end_s:.6},asetpts=PTS-STARTPTS");
     }
     let exprs: Vec<String> = intervals
         .iter()
         .map(|(a, b)| {
-            let start_s = *a as f64 / fps as f64;
-            let end_s = *b as f64 / fps as f64;
+            let start_s = *a as f64 / fps;
+            let end_s = *b as f64 / fps;
             format!("between(t\\,{start_s:.6}\\,{end_s:.6})")
         })
         .collect();
@@ -2805,6 +3049,12 @@ pub fn encode_trim_files(
     let verbosity = settings.verbosity.clone().unwrap_or_else(|| "warning".into());
 
     for (idx, input) in files.iter().enumerate() {
+        // Abandon the rest of the batch once the user cancels,
+        // rather than spawning an ffmpeg per remaining file only to
+        // kill each one on its first cancel check.
+        if is_cancelled() {
+            break;
+        }
         let file_index = idx + 1;
         let input_display = input.display().to_string();
         let ext = input
@@ -2817,6 +3067,15 @@ pub fn encode_trim_files(
         let total_frames = probe_total_frames(ffmpeg, input);
         let probe = probe_video(ffmpeg, input);
         let fps = probe.fps.unwrap_or(30).max(1);
+        // Frame index → timestamp must use the UNROUNDED rate. At 29.97
+        // (30000/1001) the rounded 30 drifts a frame every 1001, so a
+        // ten-minute NTSC clip had its audio cut ~0.6s away from the
+        // video cut. Falls back to the rounded value when the exact rate
+        // couldn't be read.
+        let fps_exact = probe
+            .fps_exact
+            .filter(|f| *f > 0.0)
+            .unwrap_or(fps as f64);
 
         let Some(total_frames) = total_frames else {
             on_progress(ProgressEvent {
@@ -2851,7 +3110,7 @@ pub fn encode_trim_files(
             continue;
         }
         let kept_frames: u64 = intervals.iter().map(|(a, b)| b - a).sum();
-        let kept_duration_s = kept_frames as f64 / fps as f64;
+        let kept_duration_s = kept_frames as f64 / fps_exact;
         let is_multi = intervals.len() > 1;
 
         let stem = input
@@ -2923,14 +3182,9 @@ pub fn encode_trim_files(
                 .arg(&palette_tmp)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null());
+                .stderr(Stdio::piped());
             hide_console(&mut pal_cmd);
-            let status = pal_cmd
-                .status()
-                .context("spawning ffmpeg for trim palette")?;
-            if !status.success() {
-                bail!("trim palette pass failed");
-            }
+            run_quiet_cancellable(pal_cmd, "trim palette pass")?;
 
             on_progress(ProgressEvent {
                 file_index,
@@ -2992,7 +3246,7 @@ pub fn encode_trim_files(
             let video_chop = build_video_chop_filter(&intervals);
             let mut graph = format!("[0:v]{video_chop}[v]");
             if has_audio {
-                let audio_chop = build_audio_chop_filter(&intervals, fps);
+                let audio_chop = build_audio_chop_filter(&intervals, fps_exact);
                 graph.push_str(&format!(";[0:a]{audio_chop}[a]"));
             }
 
@@ -3171,14 +3425,9 @@ pub fn encode_compare_files(
             .arg(&palette_tmp)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         hide_console(&mut pal_cmd);
-        let status = pal_cmd
-            .status()
-            .context("spawning ffmpeg for compare palette")?;
-        if !status.success() {
-            bail!("compare palette pass failed");
-        }
+        run_quiet_cancellable(pal_cmd, "compare palette pass")?;
 
         // Pass 2: hstack + paletteuse. The palette is the last -i input.
         let palette_idx = n;
@@ -3710,9 +3959,19 @@ fn image_codec_from_ext(path: &Path) -> crate::presets::ImageCodec {
 /// the (rare) MJPEG variants can't. Used by MakeSquare to decide
 /// whether to honor a "transparent" fill request or upgrade the
 /// output container to PNG.
+/// Can this codec, AS OFFSPRING ENCODES IT, carry an alpha channel?
+///
+/// AVIF is the subtle one and used to be waved through here. AV1's
+/// bitstream has no alpha channel at all — an AVIF file stores alpha as
+/// a separate auxiliary image item, which ffmpeg's `libaom-av1` encoder
+/// does not write (it advertises no alpha-bearing pixel format). So a
+/// Make Square "transparent" pad on an AVIF input produced a file with
+/// the transparency silently flattened to solid black, which is exactly
+/// the outcome the fill mode exists to avoid. Treating it as opaque
+/// promotes those to PNG instead, the same escape hatch JPEG gets.
 fn codec_supports_alpha(codec: &crate::presets::ImageCodec) -> bool {
     use crate::presets::ImageCodec;
-    !matches!(codec, ImageCodec::Jpeg)
+    !matches!(codec, ImageCodec::Jpeg | ImageCodec::Avif)
 }
 
 /// Probe the top-left pixel of `input`, returning it as `(r, g, b)`
@@ -3797,6 +4056,12 @@ pub fn encode_invert_files(
     };
 
     for (idx, input) in files.iter().enumerate() {
+        // Abandon the rest of the batch once the user cancels,
+        // rather than spawning an ffmpeg per remaining file only to
+        // kill each one on its first cancel check.
+        if is_cancelled() {
+            break;
+        }
         let file_index = idx + 1;
         let input_display = input.display().to_string();
         let codec = image_codec_from_ext(input);
@@ -3830,7 +4095,14 @@ pub fn encode_invert_files(
         append_image_codec_args(&mut cmd, &codec);
         cmd.arg(&out);
 
-        run_with_progress_cleanup(
+        // A file that fails must not take the rest of the batch with
+        // it. This used to be `?`, so selecting twenty images and having
+        // the third one turn out to be a corrupt JPEG abandoned the
+        // other seventeen — and because the progress window attributes
+        // an aborted run to the file it was last told about, the error
+        // was reported against the wrong file. Mirrors how the Modify
+        // tool's loop already behaves.
+        if let Err(e) = run_with_progress_cleanup(
             cmd,
             None,
             file_index,
@@ -3839,7 +4111,17 @@ pub fn encode_invert_files(
             "encode",
             &out,
             &mut on_progress,
-        )?;
+        ) {
+            on_progress(ProgressEvent {
+                file_index,
+                total_files: total,
+                input: input_display,
+                stage: "error".into(),
+                percent: None,
+                message: Some(e.to_string()),
+            });
+            continue;
+        }
 
         on_progress(ProgressEvent {
             file_index,
@@ -3894,6 +4176,12 @@ pub fn encode_make_square_files(
         .unwrap_or_else(|| "warning".into());
 
     for (idx, input) in files.iter().enumerate() {
+        // Abandon the rest of the batch once the user cancels,
+        // rather than spawning an ffmpeg per remaining file only to
+        // kill each one on its first cancel check.
+        if is_cancelled() {
+            break;
+        }
         let file_index = idx + 1;
         let input_display = input.display().to_string();
 
@@ -4006,7 +4294,14 @@ pub fn encode_make_square_files(
         append_image_codec_args(&mut cmd, &codec);
         cmd.arg(&out);
 
-        run_with_progress_cleanup(
+        // A file that fails must not take the rest of the batch with
+        // it. This used to be `?`, so selecting twenty images and having
+        // the third one turn out to be a corrupt JPEG abandoned the
+        // other seventeen — and because the progress window attributes
+        // an aborted run to the file it was last told about, the error
+        // was reported against the wrong file. Mirrors how the Modify
+        // tool's loop already behaves.
+        if let Err(e) = run_with_progress_cleanup(
             cmd,
             None,
             file_index,
@@ -4015,7 +4310,17 @@ pub fn encode_make_square_files(
             "encode",
             &out,
             &mut on_progress,
-        )?;
+        ) {
+            on_progress(ProgressEvent {
+                file_index,
+                total_files: total,
+                input: input_display,
+                stage: "error".into(),
+                percent: None,
+                message: Some(e.to_string()),
+            });
+            continue;
+        }
 
         on_progress(ProgressEvent {
             file_index,
@@ -4135,6 +4440,12 @@ pub fn encode_modify_files(
     let total = files.len();
 
     for (idx, input) in files.iter().enumerate() {
+        // Abandon the rest of the batch once the user cancels,
+        // rather than spawning an ffmpeg per remaining file only to
+        // kill each one on its first cancel check.
+        if is_cancelled() {
+            break;
+        }
         let file_index = idx + 1;
         let input_display = input.display().to_string();
 
@@ -4241,6 +4552,44 @@ pub fn encode_modify_files(
             output_path(&encode_input, &preset)
         };
 
+        // Overwrite only makes sense if we can write the SOURCE's own
+        // container. Offspring only encodes the still formats listed in
+        // `ImageCodec`, so a `.bmp` / `.tif` / `.tiff` source would
+        // otherwise get PNG bytes renamed on top of it — a file whose
+        // contents no longer match its extension. Refuse those rather
+        // than corrupt the original; without the tick the user still
+        // gets a correctly named `_modified.png` beside it.
+        if spec.overwrite && matches!(preset.format, crate::presets::Format::Image) {
+            let src_ext = input
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let codec_ext = preset
+                .image_codec
+                .as_ref()
+                .map(|c| c.ext())
+                .unwrap_or("png");
+            // `.jpeg` and `.jpg` are one format under two spellings.
+            let compatible = src_ext == codec_ext
+                || (matches!(src_ext.as_str(), "jpg" | "jpeg") && codec_ext == "jpg");
+            if !compatible {
+                on_progress(ProgressEvent {
+                    file_index,
+                    total_files: total,
+                    input: input_display.clone(),
+                    stage: "error".into(),
+                    percent: None,
+                    message: Some(format!(
+                        "Can't overwrite a .{src_ext} file — Offspring writes .{codec_ext} for \
+                         this source. Untick \"Overwrite original\" to save it alongside instead. \
+                         The original is unchanged."
+                    )),
+                });
+                continue;
+            }
+        }
+
         // Override the preset suffix with a unique temp tag when
         // overwriting so encode_file writes alongside the source
         // without clobbering it. We rename onto the source path
@@ -4252,12 +4601,27 @@ pub fn encode_modify_files(
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             preset_for_encode.suffix = format!("._modify_tmp_{nonce}");
-            Some(output_path(&encode_input, &preset_for_encode))
+            // Force the temp file to carry the SOURCE's extension.
+            // ffmpeg picks its muxer from the output extension, so
+            // without this a `.mkv` / `.avi` / `.mov` source had an MP4
+            // muxed under a temp `.mp4` name and then renamed on top of
+            // the original, leaving bytes that no longer match the
+            // extension. Writing the source's own container makes the
+            // rename a pure content swap. A container that genuinely
+            // can't carry the stream (h264 into `.webm`) now fails at
+            // encode time with the original still intact — the right
+            // outcome, and a visible one.
+            let derived = output_path(&encode_input, &preset_for_encode);
+            let with_src_ext = match input.extension() {
+                Some(ext) => derived.with_extension(ext),
+                None => derived,
+            };
+            Some(unique_output_path(&with_src_ext))
         } else {
             None
         };
 
-        let result = encode_file(
+        let result = encode_file_to(
             ffmpeg,
             &encode_input,
             &preset_for_encode,
@@ -4265,6 +4629,7 @@ pub fn encode_modify_files(
             duration,
             file_index,
             total,
+            tmp_path.clone(),
             |ev| on_progress(ev),
         );
         if let Err(e) = result {
@@ -4415,7 +4780,19 @@ pub fn derive_modify_preset(
         // the `crop=...`.
         width: None,
         height: None,
-        fps: probe.fps,
+        // Only pin an output frame rate when a speed change actually
+        // needs one. `setpts` moves timestamps without adding or
+        // removing frames, so the retime path needs an explicit target
+        // rate to normalise back to — but a plain flip or crop does not,
+        // and seeding this unconditionally from the ROUNDED probe put an
+        // `fps=30` in the chain for every 29.97 source. That resamples
+        // the whole clip (a duplicated frame roughly every 1001 frames)
+        // for a user who only asked to mirror the picture.
+        fps: if (speed - 1.0).abs() > 0.001 {
+            probe.fps
+        } else {
+            None
+        },
         crop: None,
         palette_colors: Some(128),
         dither: Some(Dither::Bayer),
@@ -4591,6 +4968,57 @@ fn encode_compare_images(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// drawtext text is unescaped twice — once by the filtergraph
+    /// tokenizer, once by drawtext's expander — so these are byte-exact
+    /// assertions, not shape checks. The expected strings were verified
+    /// against a real ffmpeg run: each one round-trips to the original
+    /// input at the far end of both passes.
+    #[test]
+    fn drawtext_escapes_survive_both_parser_passes() {
+        // A quote has to close the quoted section and reopen it; `\'`
+        // alone leaks and swallows the rest of the filter graph.
+        assert_eq!(escape_drawtext_literal("it's"), r"it'\\\''s");
+        // Percent and backslash need to arrive at the expander still
+        // escaped, so they carry one extra level.
+        assert_eq!(escape_drawtext_literal("50% off"), r"50\\% off");
+        assert_eq!(escape_drawtext_literal(r"C:\dir"), r"C\:\\\\dir");
+        // Option/graph separators only need the one level.
+        assert_eq!(escape_drawtext_literal("a,b"), r"a\,b");
+        assert_eq!(escape_drawtext_literal("C:/dir"), r"C\:/dir");
+        // Ordinary text must pass through completely untouched.
+        assert_eq!(escape_drawtext_literal("plain text 123"), "plain text 123");
+    }
+
+    /// Regression guard for the GIF branch: it used to hand-roll its own
+    /// filter chain and so dropped every Modify-tool transform. Both
+    /// paths must now come from the same builder.
+    #[test]
+    fn gif_and_video_chains_share_the_same_modify_transforms() {
+        let mut p = crate::defaults::default_custom();
+        p.width = None;
+        p.height = None;
+        p.crop = None;
+        p.grayscale = None;
+        p.timecode = None;
+        p.crop_rect = Some((10, 20, 100, 200));
+        p.modify_rotate = Some(90);
+        p.modify_flip_h = Some(true);
+        p.modify_reverse = Some(true);
+        p.fps = Some(30);
+
+        let chain = build_filter_chain(&p);
+        for expected in ["crop=100:200:10:20", "transpose=1", "hflip", "reverse"] {
+            assert!(chain.contains(expected), "{expected} missing from {chain}");
+        }
+
+        // The width override is the only thing the GIF path changes.
+        let gif_chain = build_filter_chain_with_width(&p, Some(480));
+        for expected in ["crop=100:200:10:20", "transpose=1", "hflip", "reverse"] {
+            assert!(gif_chain.contains(expected), "{expected} missing from {gif_chain}");
+        }
+        assert!(gif_chain.contains("scale=480:"), "width override missing from {gif_chain}");
+    }
 
     /// The signature line is the *first* thing ffmpeg prints in this
     /// failure, and the run then emits hundreds of "No sequence header"

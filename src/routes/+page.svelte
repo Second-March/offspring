@@ -33,6 +33,13 @@
   let dirty = $state(false);
   let saving = $state(false);
   let savedTick = $state(0);
+  // Surfaced next to the Save button when a save is rejected. Null when
+  // the last save succeeded or none has been attempted.
+  let saveError = $state<string | null>(null);
+  // False until presets + settings have actually been read from disk.
+  // Every write path checks this so a failed load can't be persisted
+  // back as empty/default state.
+  let loaded = $state(false);
   // Right-click menu for preset rows. Non-null when visible.
   let ctxMenu = $state<{ x: number; y: number; preset: Preset } | null>(null);
 
@@ -437,8 +444,24 @@
   }
 
   async function reload() {
-    presets = await api.listPresets();
-    settings = await api.getSettings();
+    // Load presets + settings under a guard. These two initialise to `[]`
+    // and `{}`, so a rejection here used to leave the editor holding
+    // empty placeholders that LOOKED like real state: the next settings
+    // toggle serialised `{}` back to disk and reset every preference,
+    // and a Save would have written an empty preset list. Nothing may be
+    // written until we have actually read what's on disk.
+    try {
+      presets = await api.listPresets();
+      settings = await api.getSettings();
+      loaded = true;
+      saveError = null;
+    } catch (err) {
+      loaded = false;
+      saveError =
+        `Couldn't read your presets and settings: ${err}. ` +
+        `Saving is disabled so nothing gets overwritten — restart Offspring to retry.`;
+      return;
+    }
     ensureTools();
     ffmpeg = await api.ffmpegStatus();
     // Refresh the build-variant marker once per reload. Cheap (no
@@ -588,19 +611,39 @@
   }
 
   async function save() {
+    if (!loaded) {
+      saveError = "Can't save — presets were never loaded successfully.";
+      return;
+    }
     saving = true;
+    saveError = null;
     try {
       await api.savePresets(presets);
-      dirty = false;
+      markPresetSaved();
       savedTick++;
+    } catch (err) {
+      // The rejection used to have no `catch` at all, so a preset the
+      // backend refuses — a negative width, a zero fps, a CRF out of
+      // range — made "Save and Sync" spin briefly and then do nothing
+      // at all, with the reason only visible in the webview console.
+      saveError = String(err);
     } finally {
       saving = false;
     }
   }
 
   async function saveSettings() {
-    await api.saveSettings(settings);
-    ffmpeg = await api.ffmpegStatus();
+    if (!loaded) {
+      saveError = "Can't save — settings were never loaded successfully.";
+      return;
+    }
+    saveError = null;
+    try {
+      await api.saveSettings(settings);
+      ffmpeg = await api.ffmpegStatus();
+    } catch (err) {
+      saveError = String(err);
+    }
   }
 
   // macOS-only Services-onboarding hint. Surfaces the System Settings
@@ -721,30 +764,48 @@
     };
   }
 
-  // Track edits to mark dirty
+  // Track edits to mark dirty.
+  //
+  // This used to enumerate the fields to watch by hand, which failed in
+  // two directions at once. Fields added later — prores_profile,
+  // image_codec, image_quality, strip_metadata, grayscale, timecode,
+  // watermark, guides, overlay, icon — were not on the list, so editing
+  // them left the preset looking clean and the change was thrown away.
+  // And because the effect fired on `selected` itself, merely LOADING
+  // the page or clicking a different preset set dirty = true, so the
+  // editor claimed unsaved changes from the moment it opened.
+  //
+  // Comparing a snapshot fixes both and cannot drift as fields are
+  // added: `JSON.stringify` reads every property, which is also what
+  // subscribes this effect to all of them.
+  let pristineId: string | null = null;
+  let pristineJson: string | null = null;
   $effect(() => {
-    if (selected) {
-      // reading selected fields subscribes effect
-      void selected.name;
-      void selected.format;
-      void selected.suffix;
-      void selected.width;
-      void selected.height;
-      void selected.fps;
-      void selected.crop;
-      void selected.crf;
-      void selected.palette_colors;
-      void selected.dither;
-      void selected.bayer_scale;
-      void selected.preset_speed;
-      void selected.video_bitrate;
-      void selected.audio_bitrate;
-      void selected.use_cuda;
-      void selected.target_max_mb;
-      void selected.enabled;
-      dirty = true;
+    if (!selected) {
+      pristineId = null;
+      pristineJson = null;
+      dirty = false;
+      return;
     }
+    const current = JSON.stringify(selected);
+    if (pristineId !== selected.id) {
+      // A different preset just became selected. That's a load, not an
+      // edit — take the baseline and stay clean.
+      pristineId = selected.id;
+      pristineJson = current;
+      dirty = false;
+      return;
+    }
+    dirty = current !== pristineJson;
   });
+
+  /// Re-baseline the selected preset after a successful save so the
+  /// editor goes clean without waiting for a selection change.
+  function markPresetSaved() {
+    pristineId = selected?.id ?? null;
+    pristineJson = selected ? JSON.stringify(selected) : null;
+    dirty = false;
+  }
 </script>
 
 <svelte:window
@@ -953,11 +1014,14 @@
         <span class="dot {ffmpeg.found ? 'ok' : 'warn'}"></span>
         FFmpeg {ffmpeg.found ? "ready" : "missing"}
       </span>
+      {#if saveError}
+        <span class="tiny save-error" title={saveError}>{saveError}</span>
+      {/if}
       {#if dirty}
         <button class="primary save-pulse" onclick={save} disabled={saving}>
           {saving ? "Saving…" : "Save and Sync"}
         </button>
-      {:else if savedTick > 0}
+      {:else if savedTick > 0 && !saveError}
         <span class="tiny saved">Saved</span>
       {/if}
     </div>
@@ -2148,6 +2212,16 @@
   }
   .tools { justify-self: end; display: flex; align-items: center; gap: 8px; }
   .saved { color: var(--c-text-3); }
+  /* Save failures used to be invisible outside the console. Kept on one
+     line with the full text in the tooltip so a long backend message
+     can't push the Save button out of the header. */
+  .save-error {
+    color: var(--c-danger);
+    max-width: 46ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .panes { display: grid; grid-template-columns: 260px 1fr; flex: 1; min-height: 0; }
 

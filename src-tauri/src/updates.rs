@@ -469,6 +469,20 @@ fn emit(app: &AppHandle, ev: UpdateDownloadEvent) {
 
 #[cfg(not(feature = "studio"))]
 fn installer_path(version: &str) -> Result<PathBuf> {
+    // `version` arrives over IPC and is interpolated straight into a
+    // filename below, so it has to be checked here rather than trusted
+    // from the caller. `install_update` spawns whatever this resolves
+    // to; without the guard a version string of `../../../../Windows/
+    // System32/calc` named an executable well outside the updates
+    // directory and we would have launched it.
+    //
+    // `is_plausible_tag` is the same strict shape the release-feed
+    // parser uses: three numeric components plus an optional
+    // alphanumeric suffix, so no separator, traversal or whitespace can
+    // survive it.
+    if !is_plausible_tag(version) {
+        bail!("refusing to build an installer path from an implausible version string");
+    }
     let dir = paths::local_data_dir()?.join("updates");
     std::fs::create_dir_all(&dir).context("creating updates dir")?;
     #[cfg(windows)]
@@ -759,6 +773,12 @@ mod tests {
 
     #[test]
     fn plausible_tag_rejects_garbage() {
+        // Path traversal is the one that mattered: `installer_path`
+        // interpolates the version into a filename and `install_update`
+        // then executes it, so these must never be accepted.
+        assert!(!is_plausible_tag("../../../../Windows/System32/calc"));
+        assert!(!is_plausible_tag("0.5.2/../../evil"));
+        assert!(!is_plausible_tag(r"..\..\evil"));
         assert!(!is_plausible_tag(""));
         assert!(!is_plausible_tag("0.3"));
         assert!(!is_plausible_tag("0.3.x"));

@@ -31,12 +31,12 @@ impl MergeCommand {
 
 impl IExplorerCommand_Impl for MergeCommand_Impl {
     fn GetTitle(&self, _items: Option<&IShellItemArray>) -> Result<PWSTR> {
-        Ok(cotaskmem_wstr("Merge"))
+        cotaskmem_wstr("Merge")
     }
 
     fn GetIcon(&self, _items: Option<&IShellItemArray>) -> Result<PWSTR> {
         match read_exe_path() {
-            Some(exe) => Ok(cotaskmem_wstr(&format!("{exe},0"))),
+            Some(exe) => cotaskmem_wstr(&format!("{exe},0")),
             None => Err(E_NOTIMPL.into()),
         }
     }

@@ -1,5 +1,28 @@
 <script lang="ts">
   import type { Preset, ImageCodec, ProResProfile } from "$lib/types";
+
+  // The `min`/`max` attributes on a number input only gate the stepper
+  // and form validation — a typed or pasted value sails straight past
+  // them. Without clamping, a stray "-1" width or a CRF of 500 was
+  // written into the preset and handed to ffmpeg's filter graph
+  // verbatim. `parseInt` also yields NaN for junk, which serialises to
+  // `null` and silently wipes the field.
+  //
+  // `clampInt` keeps the field REQUIRED (falls back when unparseable);
+  // `clampIntOrNull` keeps the "empty means auto/no limit" semantics
+  // that width, height, fps and target-size rely on.
+  function clampInt(raw: string, min: number, max: number, fallback: number): number {
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  }
+
+  function clampIntOrNull(raw: string, min: number, max: number): number | null {
+    if (raw === "") return null;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) return null;
+    return Math.min(max, Math.max(min, n));
+  }
   import { getPlatform } from "$lib/api";
   let { preset }: { preset: Preset } = $props();
 
@@ -61,7 +84,7 @@
       value={preset.width ?? ""}
       oninput={(e) => {
         const v = (e.currentTarget as HTMLInputElement).value;
-        preset.width = v === "" ? null : parseInt(v, 10);
+        preset.width = clampIntOrNull(v, 2, 16384);
       }}
       placeholder="auto"
     />
@@ -73,7 +96,7 @@
       value={preset.height ?? ""}
       oninput={(e) => {
         const v = (e.currentTarget as HTMLInputElement).value;
-        preset.height = v === "" ? null : parseInt(v, 10);
+        preset.height = clampIntOrNull(v, 2, 16384);
       }}
       placeholder="auto"
     />
@@ -88,7 +111,7 @@
         value={preset.fps ?? ""}
         oninput={(e) => {
           const v = (e.currentTarget as HTMLInputElement).value;
-          preset.fps = v === "" ? null : parseInt(v, 10);
+          preset.fps = clampIntOrNull(v, 1, 240);
         }}
         placeholder="keep source"
       />
@@ -127,7 +150,7 @@
         value={preset.target_max_mb ?? ""}
         oninput={(e) => {
           const v = (e.currentTarget as HTMLInputElement).value;
-          preset.target_max_mb = v === "" ? null : parseInt(v, 10);
+          preset.target_max_mb = clampIntOrNull(v, 1, 100000);
         }}
         placeholder="no limit"
       />
@@ -207,7 +230,7 @@
           value={preset.image_quality ?? q.default}
           oninput={(e) => {
             const v = (e.currentTarget as HTMLInputElement).value;
-            preset.image_quality = v === "" ? null : parseInt(v, 10);
+            preset.image_quality = clampIntOrNull(v, q.min, q.max);
           }}
         />
       </div>
@@ -236,7 +259,7 @@
         max="256"
         value={preset.palette_colors ?? 128}
         oninput={(e) => {
-          preset.palette_colors = parseInt((e.currentTarget as HTMLInputElement).value, 10);
+          preset.palette_colors = clampInt((e.currentTarget as HTMLInputElement).value, 8, 256, 128);
         }}
       />
     </div>
@@ -259,7 +282,7 @@
           max="5"
           value={preset.bayer_scale ?? 3}
           oninput={(e) => {
-            preset.bayer_scale = parseInt((e.currentTarget as HTMLInputElement).value, 10);
+            preset.bayer_scale = clampInt((e.currentTarget as HTMLInputElement).value, 1, 5, 3);
           }}
         />
       </div>
@@ -310,7 +333,7 @@
         max="51"
         value={preset.crf ?? 23}
         oninput={(e) => {
-          preset.crf = parseInt((e.currentTarget as HTMLInputElement).value, 10);
+          preset.crf = clampInt((e.currentTarget as HTMLInputElement).value, 0, 51, 23);
         }}
       />
     </div>

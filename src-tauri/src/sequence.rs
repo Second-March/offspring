@@ -99,7 +99,43 @@ impl SequenceInfo {
 /// Run detection on a single input path. Returns `None` for videos,
 /// unknown extensions, filenames that don't end in enough digits, or
 /// sequences with no siblings.
-pub fn detect(path: &Path, min_digits: u32) -> Option<SequenceInfo> {
+/// Cached `read_dir` listings, keyed by directory: `(file_stem, extension)`
+/// for every regular file found.
+///
+/// Sequence detection has to look at a file's siblings, and both
+/// `dedupe_sequence_frames` and the encode-command's own mapping call
+/// `detect` once per selected path. Each call used to run its own
+/// `read_dir` plus an `is_file()` stat per entry, so selecting 500
+/// frames out of a 5,000-file render directory did 2.5 million
+/// filesystem operations — on the thread handling the Tauri command,
+/// which froze every window until it finished. One listing per
+/// directory serves every file in it.
+pub type DirCache = std::collections::HashMap<PathBuf, Vec<(String, String)>>;
+
+fn dir_listing<'a>(cache: &'a mut DirCache, dir: &Path) -> &'a [(String, String)] {
+    cache.entry(dir.to_path_buf()).or_insert_with(|| {
+        let mut out: Vec<(String, String)> = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else { return out };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let Some(stem) = p.file_stem().and_then(OsStr::to_str) else { continue };
+            let Some(ext) = p.extension().and_then(OsStr::to_str) else { continue };
+            out.push((stem.to_string(), ext.to_string()));
+        }
+        out
+    })
+}
+
+/// [`detect`] against a shared directory-listing cache. Prefer this when
+/// detecting over more than one path.
+pub fn detect_cached(
+    path: &Path,
+    min_digits: u32,
+    cache: &mut DirCache,
+) -> Option<SequenceInfo> {
     let ext = path.extension().and_then(OsStr::to_str)?.to_ascii_lowercase();
     if !IMAGE_EXTS.iter().any(|e| *e == ext) {
         return None;
@@ -118,17 +154,10 @@ pub fn detect(path: &Path, min_digits: u32) -> Option<SequenceInfo> {
     // treated as separate sequences and ignored — lets users keep
     // multiple render passes side-by-side without them getting merged.
     let mut frames: Vec<u32> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return None };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if !p.is_file() {
-            continue;
-        }
-        let Some(sib_ext) = p.extension().and_then(OsStr::to_str) else { continue };
+    for (sib_stem, sib_ext) in dir_listing(cache, &dir) {
         if !sib_ext.eq_ignore_ascii_case(&ext) {
             continue;
         }
-        let Some(sib_stem) = p.file_stem().and_then(OsStr::to_str) else { continue };
         let Some((sib_prefix, sib_digits)) = split_trailing_digits(sib_stem) else { continue };
         if sib_prefix != prefix || sib_digits.len() != digits as usize {
             continue;
@@ -156,6 +185,11 @@ pub fn detect(path: &Path, min_digits: u32) -> Option<SequenceInfo> {
     })
 }
 
+pub fn detect(path: &Path, min_digits: u32) -> Option<SequenceInfo> {
+    let mut cache = DirCache::new();
+    detect_cached(path, min_digits, &mut cache)
+}
+
 /// Split `"render_0042"` into `("render_", "0042")`. Returns None for
 /// names that don't end in at least one ASCII digit. The digit run is
 /// greedy — `v002_0042` splits into `("v002_", "0042")`, not `("v", "0020042")`.
@@ -171,15 +205,15 @@ fn split_trailing_digits(stem: &str) -> Option<(&str, &str)> {
     Some((&stem[..i], &stem[i..]))
 }
 
-/// Collapse a caller-supplied file list so frames of the same sequence
-/// only trigger one encode. Preserves input order by keeping the first
-/// occurrence of each sequence key and discarding later frames of it.
-/// Non-sequence entries pass through untouched.
 pub fn dedupe_sequence_frames(files: &[PathBuf], min_digits: u32) -> Vec<PathBuf> {
     let mut seen_keys: Vec<(PathBuf, String, u32, String)> = Vec::new();
     let mut out: Vec<PathBuf> = Vec::with_capacity(files.len());
+    // One directory listing shared across the whole selection. Without
+    // it this loop re-scanned the containing directory once per selected
+    // file, which is quadratic in a render folder.
+    let mut cache = DirCache::new();
     for f in files {
-        match detect(f, min_digits) {
+        match detect_cached(f, min_digits, &mut cache) {
             Some(info) => {
                 let key = (info.dir.clone(), info.stem_prefix.clone(), info.digits, info.ext.clone());
                 if !seen_keys.contains(&key) {

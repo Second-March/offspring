@@ -261,13 +261,24 @@ pub fn start_listener<F>(callback: F)
 where
     F: Fn(Vec<String>) + Send + 'static,
 {
+    // The callback is handed to a short-lived per-connection thread
+    // below, so it needs to be shareable. `Arc<Mutex<_>>` rather than a
+    // `Sync` bound keeps the documented contract intact: the natural
+    // bridge to setup() is an `mpsc::Sender`, which is `Send` but not
+    // `Sync`. The lock serialises the callback itself, which is fine —
+    // it's a channel send, and the point of the threads is to keep the
+    // BLOCKING READ off the accept loop, not to parallelise dispatch.
+    let callback = std::sync::Arc::new(std::sync::Mutex::new(callback));
+
     std::thread::spawn(move || {
         let name = pipe_name_w();
         loop {
             unsafe {
-                // One pipe instance per iteration. We close it at the
-                // end of each loop body so the next CreateNamedPipeW
-                // succeeds without colliding with the previous handle.
+                // One pipe instance per iteration. Ownership of the
+                // handle passes to the per-connection thread spawned
+                // below, which closes it when that client is done; the
+                // 16-instance limit is what bounds how many can be open
+                // at once.
                 let pipe = CreateNamedPipeW(
                     name.as_ptr(),
                     PIPE_ACCESS_DUPLEX,
@@ -298,12 +309,37 @@ where
                     continue;
                 }
 
-                if let Some(argv) = read_message(pipe) {
-                    callback(argv);
-                }
-
-                DisconnectNamedPipe(pipe);
-                CloseHandle(pipe);
+                // Hand this connection to its own thread and get straight
+                // back to accepting the next one.
+                //
+                // `read_message` is a blocking `ReadFile` with no
+                // timeout, and this loop used to run it inline. A
+                // secondary that connected and then stalled — descheduled
+                // under load, suspended by an AV scanner, killed between
+                // connect and write — parked the listener there forever.
+                // Every other secondary then exhausted its connect-retry
+                // budget against a server that was never coming back and
+                // exited silently, so a multi-file right-click simply
+                // lost files with nothing logged. The pipe is created
+                // with 16 instances; now they can actually be used.
+                //
+                // HANDLE is a raw pointer and therefore not `Send`, so it
+                // crosses the thread boundary as a usize.
+                let pipe_addr = pipe as usize;
+                let cb = std::sync::Arc::clone(&callback);
+                std::thread::spawn(move || {
+                    let pipe = pipe_addr as HANDLE;
+                    unsafe {
+                        if let Some(argv) = read_message(pipe) {
+                            // Recover from poisoning rather than dropping
+                            // argv forever after one panicking callback.
+                            let cb = cb.lock().unwrap_or_else(|e| e.into_inner());
+                            cb(argv);
+                        }
+                        DisconnectNamedPipe(pipe);
+                        CloseHandle(pipe);
+                    }
+                });
             }
         }
     });

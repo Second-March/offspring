@@ -216,8 +216,17 @@ Filename: "{app}\{#AppExeName}"; \
 ; CN=Second March, so we only remove certificates we provisioned â€”
 ; never an unrelated cert that happens to share the CN. The FriendlyName
 ; is set at provisioning time in build-msix.ps1.
+;
+; NOTE ON BRACES: Inno expands `{{` to a literal `{`, but has no
+; corresponding rule for `}` -- a closing brace is already literal, so
+; `}}` is emitted verbatim as TWO braces. The scriptblock below used to
+; close with `}}`, which handed PowerShell an unbalanced extra brace. It
+; failed to parse, and with -ErrorAction SilentlyContinue and no
+; exit-code check that failure was invisible: the self-signed
+; code-signing certificate we add to the user's TrustedPeople store was
+; never actually removed at uninstall.
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -NonInteractive -Command ""Get-ChildItem Cert:\CurrentUser\TrustedPeople -ErrorAction SilentlyContinue | Where-Object {{ $_.Subject -eq 'CN=Second March' -and $_.FriendlyName -eq 'Offspring Shell Ext Dev Cert' }} | Remove-Item -ErrorAction SilentlyContinue"""; \
+    Parameters: "-NoProfile -NonInteractive -Command ""Get-ChildItem Cert:\CurrentUser\TrustedPeople -ErrorAction SilentlyContinue | Where-Object {{ $_.Subject -eq 'CN=Second March' -and $_.FriendlyName -eq 'Offspring Shell Ext Dev Cert' } | Remove-Item -ErrorAction SilentlyContinue"""; \
     RunOnceId: "OffspringCertCleanup"; \
     Flags: runhidden waituntilterminated
 

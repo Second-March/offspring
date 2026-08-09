@@ -63,12 +63,12 @@ impl RootCommand {
 
 impl IExplorerCommand_Impl for RootCommand_Impl {
     fn GetTitle(&self, _items: Option<&IShellItemArray>) -> Result<PWSTR> {
-        Ok(cotaskmem_wstr("Offspring"))
+        cotaskmem_wstr("Offspring")
     }
 
     fn GetIcon(&self, _items: Option<&IShellItemArray>) -> Result<PWSTR> {
         match read_exe_path() {
-            Some(exe) => Ok(cotaskmem_wstr(&format!("{exe},0"))),
+            Some(exe) => cotaskmem_wstr(&format!("{exe},0")),
             None => Err(E_NOTIMPL.into()),
         }
     }

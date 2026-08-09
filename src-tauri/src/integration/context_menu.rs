@@ -103,6 +103,52 @@ fn current_exe_string() -> Result<String> {
     Ok(exe.to_string_lossy().into_owned())
 }
 
+/// Registry root holding the shared `ExePath` value.
+///
+/// Standard keeps the historical `Software\Offspring` spelling because
+/// the shipped MSIX shell-extension DLL has that path compiled in — the
+/// value is the contract between the two, and renaming it would break
+/// every already-installed package.
+///
+/// Studio gets its own root. Both builds used to write here, so a
+/// side-by-side install had Studio's `sync` overwrite `ExePath` with the
+/// Studio binary — pointing Standard's shell extension at the wrong
+/// app — and a Studio UNINSTALL then ran `delete_subkey_all` on the
+/// shared key, leaving the Standard install's menu inert. Studio ships
+/// no shell extension of its own, so it has nothing to lose by moving.
+/// This mirrors how the verb and subkey identifiers below are already
+/// namespaced per variant.
+#[cfg(not(feature = "studio"))]
+pub const APP_ROOT_KEY: &str = r"Software\Offspring";
+#[cfg(feature = "studio")]
+pub const APP_ROOT_KEY: &str = r"Software\Offspring Studio";
+
+/// Publish the install path so the MSIX shell-extension DLL can resolve
+/// offspring.exe without hard-coding a program-files path. The DLL runs
+/// inside Explorer.exe, has no relation to our install directory, and
+/// the MSIX package location isn't ours either — this registry value is
+/// the contract between the two.
+///
+/// Deliberately NOT part of `sync()`, which is where it used to live.
+/// `sync()` only runs when the CLASSIC menu is the active surface, so
+/// with the modern menu enabled the value was never refreshed. Uninstall
+/// removes the whole `Software\Offspring` key, so an uninstall/reinstall
+/// cycle (or a reinstall to a different directory) with the modern menu
+/// switched on left the shell extension pointing at a path that no
+/// longer existed — every modern menu entry silently did nothing.
+/// `sync_all` now calls this on every sync, whichever surface is active.
+pub fn publish_exe_path() -> Result<()> {
+    let exe = current_exe_string()?;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (root_key, _) = hkcu
+        .create_subkey(APP_ROOT_KEY)
+        .with_context(|| format!(r"creating HKCU\{APP_ROOT_KEY}"))?;
+    root_key
+        .set_value("ExePath", &exe)
+        .context("writing ExePath")?;
+    Ok(())
+}
+
 /// Write two top-level verbs ("Offspring Presets" + "Offspring Tools")
 /// each with their own ExtendedSubCommandsKey flyout. Each flyout
 /// stays well under the empirical ~10-item per-flyout cap that
@@ -115,13 +161,7 @@ pub fn sync(presets: &[Preset], settings: &Settings) -> Result<()> {
     let exe = current_exe_string()?;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
-    // Publish the install path so the MSIX shell-extension DLL can resolve
-    // offspring.exe without hard-coding a program-files path. The DLL runs
-    // inside Explorer.exe, has no relation to our install directory, and
-    // the MSIX package location isn't ours either — this registry value
-    // is the contract between the two.
-    let (root_key, _) = hkcu.create_subkey(r"Software\Offspring")?;
-    root_key.set_value("ExePath", &exe)?;
+    publish_exe_path()?;
 
     // Helper closure: write a leaf verb at <sub_root_path>\<key_name>.
     // MultiSelectModel=Player tells Explorer to batch all selected

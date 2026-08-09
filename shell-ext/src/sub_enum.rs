@@ -12,7 +12,7 @@
 use std::cell::Cell;
 
 use windows::core::*;
-use windows::Win32::Foundation::{S_FALSE, S_OK};
+use windows::Win32::Foundation::{E_POINTER, S_FALSE, S_OK};
 use windows::Win32::UI::Shell::{IEnumExplorerCommand, IEnumExplorerCommand_Impl, IExplorerCommand};
 
 #[implement(IEnumExplorerCommand)]
@@ -41,12 +41,31 @@ impl IEnumExplorerCommand_Impl for SubEnum_Impl {
         rgelt: *mut Option<IExplorerCommand>,
         pceltfetched: *mut u32,
     ) -> HRESULT {
+        // `rgelt` is a caller-allocated out-array. Explorer is not
+        // required to have initialised it, and per the COM contract it
+        // normally hasn't.
+        if rgelt.is_null() {
+            if !pceltfetched.is_null() {
+                unsafe { *pceltfetched = 0 };
+            }
+            return E_POINTER;
+        }
+
         let start = self.cursor.get();
         let end = (start + celt as usize).min(self.items.len());
         let count = end - start;
         unsafe {
             for i in 0..count {
-                *rgelt.add(i) = Some(self.items[start + i].clone());
+                // `ptr::write`, NOT `*ptr = value`. Assignment through a
+                // raw pointer DROPS whatever it believes is already
+                // there — and for `Option<IExplorerCommand>` over
+                // uninitialised memory that means reading a garbage
+                // stack word as a COM interface pointer and calling
+                // Release() on it. Inside Explorer.exe that is a
+                // random-address vtable call: undefined behaviour, and
+                // in practice a crashed shell. `write` initialises
+                // without touching the previous contents.
+                std::ptr::write(rgelt.add(i), Some(self.items[start + i].clone()));
             }
             if !pceltfetched.is_null() {
                 *pceltfetched = count as u32;

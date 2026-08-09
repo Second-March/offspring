@@ -44,7 +44,7 @@ impl ChildCommand {
 
 impl IExplorerCommand_Impl for ChildCommand_Impl {
     fn GetTitle(&self, _items: Option<&IShellItemArray>) -> Result<PWSTR> {
-        Ok(cotaskmem_wstr(&self.title))
+        cotaskmem_wstr(&self.title)
     }
 
     fn GetIcon(&self, _items: Option<&IShellItemArray>) -> Result<PWSTR> {
@@ -55,10 +55,10 @@ impl IExplorerCommand_Impl for ChildCommand_Impl {
             _ => None,
         };
         if let Some(i) = icon {
-            return Ok(cotaskmem_wstr(&i));
+            return cotaskmem_wstr(&i);
         }
         match read_exe_path() {
-            Some(exe) => Ok(cotaskmem_wstr(&format!("{exe},0"))),
+            Some(exe) => cotaskmem_wstr(&format!("{exe},0")),
             None => Err(E_NOTIMPL.into()),
         }
     }

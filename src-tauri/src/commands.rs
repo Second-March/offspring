@@ -37,10 +37,44 @@ pub fn list_presets() -> Result<Vec<Preset>, String> {
     presets::load_presets().map_err(|e| e.to_string())
 }
 
+/// Load the settings that a sync must run against, refusing to invent
+/// them.
+///
+/// `sync_all` REMOVES whatever the settings say is disabled — the
+/// Windows 11 modern menu registration, the SendTo shortcuts, the tool
+/// verbs. Substituting `Settings::default()` when the real file can't be
+/// read therefore doesn't degrade gracefully, it tears down integrations
+/// the user had switched on, and it does it silently in the middle of an
+/// unrelated "save my preset" action. A read failure here means we do
+/// not know the user's intent, so the only safe move is to say so.
+fn settings_for_sync() -> Result<Settings, String> {
+    presets::load_settings().map_err(|e| {
+        format!(
+            "Saved, but couldn't re-read settings to update the right-click menu: {e}. \
+             Your menu has been left exactly as it was."
+        )
+    })
+}
+
+/// Same contract as [`settings_for_sync`] for the preset list.
+///
+/// This one was the sharper edge: `unwrap_or_default()` on a
+/// `Vec<Preset>` yields an EMPTY list, so a settings toggle that
+/// happened to hit an unreadable presets.json rebuilt the right-click
+/// menu with no presets in it at all.
+fn presets_for_sync() -> Result<Vec<Preset>, String> {
+    presets::load_presets().map_err(|e| {
+        format!(
+            "Saved, but couldn't re-read presets to update the right-click menu: {e}. \
+             Your menu has been left exactly as it was."
+        )
+    })
+}
+
 #[tauri::command]
 pub fn save_presets(presets_in: Vec<Preset>) -> Result<(), String> {
     presets::save_presets(&presets_in).map_err(|e| e.to_string())?;
-    let settings = presets::load_settings().unwrap_or_default();
+    let settings = settings_for_sync()?;
     integration::sync_all(&presets_in, &settings).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -49,7 +83,7 @@ pub fn save_presets(presets_in: Vec<Preset>) -> Result<(), String> {
 pub fn reset_presets_to_defaults() -> Result<Vec<Preset>, String> {
     let d = defaults::default_presets();
     presets::save_presets(&d).map_err(|e| e.to_string())?;
-    let settings = presets::load_settings().unwrap_or_default();
+    let settings = settings_for_sync()?;
     integration::sync_all(&d, &settings).map_err(|e| e.to_string())?;
     Ok(d)
 }
@@ -65,7 +99,7 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
     // Toggling sendto / modern-menu should take effect immediately rather
     // than at next first-run, so re-sync integrations against the new
     // settings now.
-    let ps = presets::load_presets().unwrap_or_default();
+    let ps = presets_for_sync()?;
     integration::sync_all(&ps, &settings).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -539,6 +573,15 @@ pub fn encode(
 
     std::thread::spawn(move || {
         for (i, input) in inputs.iter().enumerate() {
+            // Stop the batch on cancel instead of walking the rest of the
+            // selection. Without this, cancelling file 2 of 20 still
+            // spawned ffmpeg for files 3..20 — each one killed on its
+            // first cancel check — so the user got eighteen spurious
+            // "Encode cancelled." errors and a long wait for a batch they
+            // had already stopped.
+            if ffmpeg::is_cancelled() {
+                break;
+            }
             let duration = input.duration_hint(&ffmpeg_path);
             let app_cl = app.clone();
             let result = ffmpeg::encode_file(
@@ -1411,7 +1454,13 @@ pub fn prepare_compare_grid_encode(
 /// an unsupported-input error.
 #[tauri::command]
 pub fn probe_dimensions(path: String) -> Result<Option<(u32, u32)>, String> {
-    ffmpeg::reset_cancel();
+    // Deliberately NOT `reset_cancel()`. The cancel flag is process-global
+    // and exists to be cleared when a NEW job starts; a read-only probe is
+    // not a job. Clearing it here meant a probe firing after the user hit ✕
+    // — the Crop dialog probes on open and on every scrub — silently
+    // resurrected the encode they had just cancelled. This command runs
+    // ffprobe directly and never consults the flag, so it has nothing to
+    // gain from resetting it.
     let settings = presets::load_settings().unwrap_or_default();
     let ffmpeg_path = ffmpeg::resolve_ffmpeg(&settings).map_err(|e| e.to_string())?;
     Ok(ffmpeg::probe_dimensions(&ffmpeg_path, std::path::Path::new(&path)))
@@ -1431,7 +1480,9 @@ pub fn extract_preview_frame(
     path: String,
     time_seconds: f64,
 ) -> Result<String, String> {
-    ffmpeg::reset_cancel();
+    // Not `reset_cancel()` — see `probe_dimensions`. This runs a plain
+    // `cmd.status()` that never reads the cancel flag, so resetting it
+    // could only ever clobber a cancel meant for a running encode.
     let settings = presets::load_settings().unwrap_or_default();
     let ffmpeg_path = ffmpeg::resolve_ffmpeg(&settings).map_err(|e| e.to_string())?;
 
@@ -1582,9 +1633,44 @@ fn position_near_cursor(app: &tauri::AppHandle, w: f64, h: f64) -> Option<(f64, 
     let mon_lw = mon_size.width as f64 / scale;
     let mon_lh = mon_size.height as f64 / scale;
     let margin = 8.0;
-    lx = lx.clamp(mon_lx + margin, mon_lx + mon_lw - w - margin);
-    ly = ly.clamp(mon_ly + margin, mon_ly + mon_lh - h - margin);
+    // `f64::clamp` PANICS when min > max, and that is reachable: the
+    // window doesn't fit the monitor whenever `w + 2*margin > mon_lw`.
+    // The 920x760 Modify window on a 1920x1080 screen at 150% scaling —
+    // Windows' own default for most 1080p laptops — gives a logical
+    // 1280x720, so `mon_ly + 720 - 760 - 8 < mon_ly + 8` and the app
+    // aborted (release builds are `panic = "abort"`) the moment the
+    // user opened the dialog.
+    //
+    // Flooring each maximum at its own minimum degrades gracefully
+    // instead: an oversized window pins to the monitor's top-left
+    // margin rather than taking the process down.
+    let max_x = (mon_lx + mon_lw - w - margin).max(mon_lx + margin);
+    let max_y = (mon_ly + mon_lh - h - margin).max(mon_ly + margin);
+    lx = lx.clamp(mon_lx + margin, max_x);
+    ly = ly.clamp(mon_ly + margin, max_y);
     Some((lx, ly))
+}
+
+/// Tear down any existing window with `label` so a fresh one can be
+/// built against it.
+///
+/// Tauri window labels are unique, and `WebviewWindowBuilder::build()`
+/// fails with `WebviewLabelAlreadyExists` when one is taken. Every
+/// transient window here — progress, custom, modify, trim, pick — uses
+/// a fixed label, so a second right-click that arrived while the
+/// previous window was still on screen hit that error, the `?`
+/// propagated, and the user's second job vanished without a message.
+///
+/// These windows each belong to one invocation, so reusing the old one
+/// would show the wrong job; replacing it is the behaviour that matches
+/// what the user just asked for. (`main` is different — it's a
+/// singleton, and `open_main_window` correctly re-focuses it instead.)
+fn replace_existing_window(app: &tauri::AppHandle, label: &str) {
+    if let Some(existing) = app.get_webview_window(label) {
+        // `destroy` rather than `close`: close is a request the page can
+        // intercept, and we need the label freed before the next line.
+        let _ = existing.destroy();
+    }
 }
 
 pub fn open_progress_window(app: &tauri::AppHandle) -> anyhow::Result<()> {
@@ -1610,6 +1696,7 @@ pub fn open_progress_window(app: &tauri::AppHandle) -> anyhow::Result<()> {
     // Cost: a brief blank window before the webview paints. Tradeoff
     // is acceptable; an invisible "encoding now" window is the worst
     // possible UX.
+    replace_existing_window(app, "progress");
     let mut b = WebviewWindowBuilder::new(app, "progress", WebviewUrl::App("progress/".into()))
         .title("Offspring — Encoding")
         .inner_size(pw, ph)
@@ -1627,6 +1714,7 @@ pub fn open_progress_window(app: &tauri::AppHandle) -> anyhow::Result<()> {
 
 pub fn open_custom_window(app: &tauri::AppHandle, files: Vec<String>) -> anyhow::Result<()> {
     let (pw, ph) = (500.0, 520.0);
+    replace_existing_window(app, "custom");
     let mut b = WebviewWindowBuilder::new(app, "custom", WebviewUrl::App("custom/".into()))
         .title("Offspring — Custom")
         .inner_size(pw, ph)
@@ -1674,6 +1762,7 @@ pub fn open_modify_window(app: &tauri::AppHandle, files: Vec<String>) -> anyhow:
     // itself the moment we return, and a deferred show() from the
     // frontend can no longer activate the app once the picker is
     // gone. Building visible avoids the race entirely.
+    replace_existing_window(app, "modify");
     let mut b = WebviewWindowBuilder::new(app, "modify", WebviewUrl::App("modify/".into()))
         .title("Offspring — Modify")
         .inner_size(pw, ph)
@@ -1775,10 +1864,23 @@ pub fn pick_run_tool(
     };
 
     match tool.as_str() {
-        // Dialog-driven — windows handle their own state setup +
-        // navigation to /progress/, so we don't touch routing flags.
-        "modify" => open_modify_window(&app, files).map_err(|e| e.to_string()),
-        "trim" => open_trim_window(&app, files).map_err(|e| e.to_string()),
+        // Dialog-driven — the window handles its own state setup and its
+        // own navigation to /progress/, so we don't SET a routing flag
+        // here. We do have to CLEAR the stale ones though: these flags
+        // are process-global and outlive the job that set them, so a
+        // previous "Greyscale" run left `pending_grayscale` true and the
+        // progress route could pick that up ahead of the Modify job the
+        // user actually asked for. (The route now resolves its explicit
+        // `?mode=` first as well — belt and braces, since either alone
+        // would have prevented running the wrong tool on someone's files.)
+        "modify" => {
+            clear_pending_routing(&app);
+            open_modify_window(&app, files).map_err(|e| e.to_string())
+        }
+        "trim" => {
+            clear_pending_routing(&app);
+            open_trim_window(&app, files).map_err(|e| e.to_string())
+        }
 
         // Compare: 2 = direct side-by-side; 3+ = grid dialog so the
         // user can choose cols + Grid/Mosaic layout. Mirrors the CLI
@@ -1787,6 +1889,9 @@ pub fn pick_run_tool(
             if files.len() == 2 {
                 direct(&app, files, |a| a.manage_pending_compare(true))
             } else {
+                // Dialog-driven branch — same stale-flag clearing as the
+                // Modify/Trim arms above.
+                clear_pending_routing(&app);
                 open_compare_grid_window(&app, files).map_err(|e| e.to_string())
             }
         }
@@ -1820,6 +1925,7 @@ pub fn open_pick_window(app: &tauri::AppHandle, files: Vec<String>) -> anyhow::R
     // the default preset count fits without triggering a per-column
     // scrollbar; columns still scroll independently when overflowed.
     let (pw, ph) = (760.0, 620.0);
+    replace_existing_window(app, "pick");
     let mut b = WebviewWindowBuilder::new(app, "pick", WebviewUrl::App("pick/".into()))
         .title("Offspring")
         .inner_size(pw, ph)
@@ -1844,6 +1950,7 @@ pub fn open_trim_window(app: &tauri::AppHandle, files: Vec<String>) -> anyhow::R
     // visible(true): see comment on open_progress_window for why we
     // can't rely on a frontend-deferred show() in the Services-picker
     // flow.
+    replace_existing_window(app, "trim");
     let mut b = WebviewWindowBuilder::new(app, "trim", WebviewUrl::App("trim/".into()))
         .title("Offspring — Trim")
         .inner_size(pw, ph)

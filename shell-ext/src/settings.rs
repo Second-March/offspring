@@ -25,12 +25,12 @@ impl SettingsCommand {
 
 impl IExplorerCommand_Impl for SettingsCommand_Impl {
     fn GetTitle(&self, _items: Option<&IShellItemArray>) -> Result<PWSTR> {
-        Ok(cotaskmem_wstr("Offspring settings"))
+        cotaskmem_wstr("Offspring settings")
     }
 
     fn GetIcon(&self, _items: Option<&IShellItemArray>) -> Result<PWSTR> {
         match read_exe_path() {
-            Some(exe) => Ok(cotaskmem_wstr(&format!("{exe},0"))),
+            Some(exe) => cotaskmem_wstr(&format!("{exe},0")),
             None => Err(E_NOTIMPL.into()),
         }
     }

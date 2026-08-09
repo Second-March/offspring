@@ -265,7 +265,11 @@ foreach ($p in $installers) {
         # environment, so we just invoke it with the right args and
         # check the exit code. No stdin pipes, no encoding gotchas.
         $sigPath = "$p.minisig"
-        Write-Host "  (password length: $($env:MINISIGN_PASSWORD.Length))" -ForegroundColor DarkGray
+        # Report only WHETHER the passphrase is set, never its length.
+        # This runs in a public CI log, and an exact length is a real
+        # reduction of the brute-force search space for whoever reads it.
+        $pwState = if ([string]::IsNullOrEmpty($env:MINISIGN_PASSWORD)) { 'not set' } else { 'set' }
+        Write-Host "  (MINISIGN_PASSWORD: $pwState)" -ForegroundColor DarkGray
         & $toolBin.Source $KeyPath $p $sigPath $buildId $untrusted
         if ($LASTEXITCODE -ne 0) {
             throw "offspring-sign failed (exit $LASTEXITCODE) on $p"

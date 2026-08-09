@@ -14,14 +14,21 @@ const PROFILE_DIR_NAME: &str = "Offspring Studio";
 pub fn data_dir() -> Result<PathBuf> {
     let mut p = dirs::data_dir().context("no APPDATA directory")?;
     p.push(PROFILE_DIR_NAME);
-    std::fs::create_dir_all(&p).ok();
+    // Propagate rather than `.ok()`. Swallowing this made an unwritable
+    // profile directory indistinguishable from a fresh install: every
+    // `load_*` saw "no file here" and handed back defaults, and every
+    // save then failed separately with a bare OS errno and no hint that
+    // the directory itself was the problem.
+    std::fs::create_dir_all(&p)
+        .with_context(|| format!("creating profile directory {}", p.display()))?;
     Ok(p)
 }
 
 pub fn local_data_dir() -> Result<PathBuf> {
     let mut p = dirs::data_local_dir().context("no LOCALAPPDATA directory")?;
     p.push(PROFILE_DIR_NAME);
-    std::fs::create_dir_all(&p).ok();
+    std::fs::create_dir_all(&p)
+        .with_context(|| format!("creating profile directory {}", p.display()))?;
     Ok(p)
 }
 

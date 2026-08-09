@@ -168,6 +168,24 @@ fn download_and_install_windows(app: &AppHandle) -> Result<PathBuf> {
     let tmp_zip = std::env::temp_dir().join(format!("ffmpeg-offspring-{uid}-{ts}.zip"));
     let tmp_extract = std::env::temp_dir().join(format!("ffmpeg-offspring-extract-{uid}-{ts}"));
 
+    /// Delete the staging ZIP and extract tree however this function
+    /// exits.
+    ///
+    /// Cleanup used to happen only on the success path and at the one
+    /// checksum-mismatch branch, so every OTHER failure — a dropped
+    /// connection mid-download, a disk-full write, a malformed archive,
+    /// an unexpected layout — left up to ~160 MB of staging data behind
+    /// under the temp directory. Each retry added another copy, under a
+    /// fresh timestamped name, so nothing ever reclaimed the last one.
+    struct TempGuard(PathBuf, PathBuf);
+    impl Drop for TempGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
+    let _temp_guard = TempGuard(tmp_zip.clone(), tmp_extract.clone());
+
     // --- 1. Resolve which build to fetch ----------------------------------
     // The manifest comes first, before a single byte of the ~160 MB ZIP:
     // it tells us both which asset the current release actually
@@ -219,6 +237,20 @@ fn download_and_install_windows(app: &AppHandle) -> Result<PathBuf> {
         file.write_all(&buf[..n]).context("writing temp zip")?;
         hasher.update(&buf[..n]);
         downloaded += n as u64;
+
+        // Hard ceiling on the response body. BtbN's win64-gpl zip is
+        // ~160 MB; anything approaching this is a redirect to the wrong
+        // thing or a deliberately endless stream, and without a cap we
+        // would fill the user's disk waiting for a checksum that can
+        // never match anyway.
+        const MAX_ZIP_BYTES: u64 = 512 * 1024 * 1024;
+        if downloaded > MAX_ZIP_BYTES {
+            bail!(
+                "FFmpeg download exceeded {} MB and was aborted — the server returned \
+                 far more data than a valid build.",
+                MAX_ZIP_BYTES / 1_048_576
+            );
+        }
 
         // Throttle progress emits so we don't flood the event bus.
         if last_emit.elapsed() >= Duration::from_millis(150) {
@@ -302,14 +334,40 @@ fn download_and_install_windows(app: &AppHandle) -> Result<PathBuf> {
     for sub in ["bin", "presets", "doc"] {
         let src = nested.path().join(sub);
         let dst = target.join(sub);
-        if src.exists() {
-            if dst.exists() {
-                let _ = std::fs::remove_dir_all(&dst);
+        if !src.exists() {
+            continue;
+        }
+
+        // Move the existing directory aside rather than deleting it.
+        //
+        // This used to `remove_dir_all(&dst)` first, which meant the
+        // user's working `bin/ffmpeg.exe` was gone BEFORE its
+        // replacement existed. Anything that then went wrong — disk
+        // full, an antivirus lock on the freshly extracted binary, a
+        // second bootstrap running concurrently — left them with no
+        // FFmpeg at all, having started the operation with a perfectly
+        // good one. Keeping the old copy until the new one is actually
+        // in place makes the failure recoverable.
+        let backup = target.join(format!("{sub}.old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&backup);
+        let had_backup = dst.exists() && std::fs::rename(&dst, &backup).is_ok();
+
+        // rename across drives can fail; fall back to recursive copy
+        let installed =
+            std::fs::rename(&src, &dst).is_ok() || copy_dir_recursive(&src, &dst).is_ok();
+
+        if installed {
+            let _ = std::fs::remove_dir_all(&backup);
+        } else {
+            let _ = std::fs::remove_dir_all(&dst);
+            if had_backup {
+                let _ = std::fs::rename(&backup, &dst);
             }
-            // rename across drives can fail; fall back to recursive copy
-            if std::fs::rename(&src, &dst).is_err() {
-                copy_dir_recursive(&src, &dst)?;
-            }
+            bail!(
+                "couldn't install the {sub} folder into {}. \
+                 Your previous FFmpeg install has been left in place.",
+                target.display()
+            );
         }
     }
     // BtbN names it LICENSE.txt; gyan named it LICENSE. Copy whichever
@@ -450,6 +508,17 @@ fn select_win_asset(body: &str) -> Result<(String, String)> {
             || !name.contains("win64-gpl")
             || name.contains("-shared")
         {
+            continue;
+        }
+        // The name is appended to the release download URL, so it has to
+        // be a bare filename. Without this, a tampered checksum manifest
+        // could name `ffmpeg-../../../some/other/win64-gpl.zip` and
+        // redirect the download to an arbitrary path on the same host —
+        // the SHA-256 check downstream would then happily pass, because
+        // the attacker controls the hash column in that same manifest.
+        // Neither the prefix nor the suffix test above constrains what
+        // sits between them.
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
             continue;
         }
         let rank = branch_rank(name);
@@ -599,6 +668,21 @@ mod tests {
         assert!(select_win_asset(&body).is_err());
         // Right name, malformed hash.
         assert!(select_win_asset("nothexnothex  ffmpeg-n8.1-latest-win64-gpl-8.1.zip\n").is_err());
+        // Path traversal smuggled between the required prefix and
+        // suffix. The asset name is appended to a download URL, so these
+        // must never be selected however well-formed the hash is.
+        assert!(select_win_asset(&format!(
+            "{B_HASH}  ffmpeg-../../../evil/win64-gpl.zip\n"
+        ))
+        .is_err());
+        assert!(select_win_asset(&format!(
+            "{B_HASH}  ffmpeg-x/win64-gpl.zip\n"
+        ))
+        .is_err());
+        assert!(select_win_asset(&format!(
+            "{B_HASH}  ffmpeg-x\\win64-gpl.zip\n"
+        ))
+        .is_err());
         // An HTML error page served with a 200, and an empty body.
         assert!(select_win_asset("<html>404</html>").is_err());
         assert!(select_win_asset("").is_err());
@@ -712,6 +796,19 @@ fn download_and_install_macos(app: &AppHandle) -> Result<PathBuf> {
             .join(format!("{archive_name}-offspring-{uid}-{ts}.zip"));
         let tmp_extract = std::env::temp_dir()
             .join(format!("{archive_name}-offspring-extract-{uid}-{ts}"));
+
+        // Same staging cleanup as the Windows path: the explicit removes
+        // below only cover the success and hash-mismatch exits, so any
+        // other failure left the download behind under a uniquely-named
+        // temp path that nothing would ever revisit.
+        struct TempGuard(PathBuf, PathBuf);
+        impl Drop for TempGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let _temp_guard = TempGuard(tmp_zip.clone(), tmp_extract.clone());
 
         emit(
             app,

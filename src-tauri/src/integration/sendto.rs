@@ -49,8 +49,65 @@ impl Manifest {
     }
 }
 
+/// Turn a preset name into a filename Windows will actually accept.
+///
+/// Preset names are free text. `shortcut_path` used to interpolate them
+/// straight into a path, so a perfectly reasonable name like
+/// `GIF 16:9` — a colon is illegal in a Windows filename — made
+/// `create_lnk` fail, which aborted the whole sync mid-loop and left
+/// the already-written shortcuts orphaned (the manifest that records
+/// them is only saved at the end). A name containing `..\` was worse:
+/// it resolved outside the SendTo folder entirely.
+///
+/// Replaces every reserved character, flattens path separators, trims
+/// the trailing dots and spaces Windows silently strips, side-steps the
+/// reserved device names, and caps the length so the whole path stays
+/// under MAX_PATH. Falls back to a fixed stem when nothing usable is
+/// left (a name made entirely of illegal characters).
+fn sanitize_shortcut_name(name: &str) -> String {
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+
+    let mut out: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            c if (c as u32) < 0x20 => '-',
+            c => c,
+        })
+        .collect();
+
+    // Windows drops trailing dots and spaces from filenames, so a name
+    // ending in one would produce a .lnk we then fail to find again.
+    out = out.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
+
+    // Keep the whole component well inside MAX_PATH once ".lnk" and the
+    // SendTo directory are added.
+    const MAX_STEM: usize = 96;
+    if out.chars().count() > MAX_STEM {
+        out = out.chars().take(MAX_STEM).collect::<String>().trim_end().to_string();
+    }
+
+    if out.is_empty() {
+        return "Offspring preset".to_string();
+    }
+
+    // Reserved device names are illegal with or without an extension.
+    let stem_upper = out
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    if RESERVED.contains(&stem_upper.as_str()) {
+        out.insert(0, '_');
+    }
+    out
+}
+
 fn shortcut_path(name: &str) -> Result<PathBuf> {
-    Ok(paths::sendto_dir()?.join(format!("{name}.lnk")))
+    Ok(paths::sendto_dir()?.join(format!("{}.lnk", sanitize_shortcut_name(name))))
 }
 
 pub fn current_exe() -> Result<PathBuf> {
@@ -194,9 +251,22 @@ pub fn sync(presets: &[Preset], settings: &Settings) -> Result<()> {
         }
     };
 
+    // One preset that can't be written must not abort the sync. This
+    // loop runs AFTER the old shortcuts have been deleted and BEFORE the
+    // manifest is saved, so bailing out mid-way used to leave the
+    // already-written .lnk files unrecorded — invisible to every later
+    // sync and to `cleanup()`, i.e. orphaned on the user's machine for
+    // good. Skip the failure, keep the rest, record what actually landed.
     for preset in presets.iter().filter(|p| p.enabled) {
-        let p = write_preset_shortcut(preset)?;
-        push_if_new(&p, &mut written, &mut seen);
+        match write_preset_shortcut(preset) {
+            Ok(p) => push_if_new(&p, &mut written, &mut seen),
+            Err(e) => {
+                crate::dlog!(
+                    "sendto: skipping preset {:?} — shortcut write failed: {e:#}",
+                    preset.name
+                );
+            }
+        }
     }
     let cp = write_custom_shortcut()?;
     push_if_new(&cp, &mut written, &mut seen);
