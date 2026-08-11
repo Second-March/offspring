@@ -346,6 +346,14 @@ pub struct Preset {
     /// keeps its pitch. Modify-dialog only.
     #[serde(skip)]
     pub modify_speed: Option<f32>,
+    /// PERSISTED playback-speed multiplier — the preset editor's
+    /// "Playback speed" dropdown (2× drops every other frame, etc.).
+    /// Unlike `modify_speed` above (transient, Modify-dialog only,
+    /// serde(skip)), this one saves with the preset. Feeds the same
+    /// `setpts` + `fps` machinery in `build_filter_chain`; None or 1.0
+    /// means "leave the clip's timing alone".
+    #[serde(default)]
+    pub speed: Option<f32>,
     /// What to do with the frames themselves once `modify_speed` has
     /// retimed them. Ignored when the speed is absent or 1.0.
     /// Modify-dialog only.
@@ -475,10 +483,6 @@ pub struct Settings {
     pub ffmpeg_path: Option<String>,
     #[serde(default)]
     pub verbosity: Option<String>, // warning | info
-    #[serde(default)]
-    pub pause_after: Option<bool>,
-    #[serde(default)]
-    pub descriptive_names: Option<bool>,
     /// Whether to mirror the preset list into the user's SendTo folder.
     /// Off by default — the right-click "Offspring ►" submenu from the
     /// registry-based integration replaces the SendTo surface. Flip this

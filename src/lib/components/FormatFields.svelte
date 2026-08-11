@@ -101,7 +101,86 @@
       placeholder="auto"
     />
   </div>
-  {#if preset.format !== "image"}
+  {#if preset.format === "gif"}
+    <!-- GIF frame timing, shown BOTH ways: fps and ms-per-frame are the
+         same stored value (ms = 1000 / fps) rendered from two angles, so
+         "what do 100 fps vs 5 fps get you" is never opaque. Editing
+         either updates the other. The ms field commits on change (not
+         per keystroke) so the round-tripped value doesn't fight the
+         user mid-typing. -->
+    <div>
+      <label>FPS</label>
+      <input
+        type="number"
+        min="1"
+        max="100"
+        value={preset.fps ?? ""}
+        oninput={(e) => {
+          const v = (e.currentTarget as HTMLInputElement).value;
+          preset.fps = clampIntOrNull(v, 1, 100);
+        }}
+        placeholder="keep source"
+      />
+      <span class="hint">
+        {preset.fps ? `= ${Math.round(1000 / preset.fps)} ms per frame` : "matches the source clip"}
+      </span>
+    </div>
+    <div>
+      <label title="How long each frame stays on screen — the same value as FPS, expressed as time. The GIF format stores time in whole 10 ms steps, so 10 ms (100 fps) is the fastest a GIF can express — and most players clamp anything under 20 ms to a slow 100 ms. 20 ms = 50 fps is the fastest speed that plays reliably everywhere; for faster motion use an MP4 preset.">
+        Frame duration (ms)
+      </label>
+      <input
+        type="number"
+        min="10"
+        max="1000"
+        step="10"
+        value={preset.fps ? Math.round(1000 / preset.fps) : ""}
+        onchange={(e) => {
+          const v = (e.currentTarget as HTMLInputElement).value;
+          const ms = clampIntOrNull(v, 10, 1000);
+          preset.fps = ms == null ? null : Math.max(1, Math.round(1000 / ms));
+        }}
+        placeholder="keep source"
+      />
+      <span class="hint" class:hint-warn={preset.fps != null && preset.fps > 50}>
+        {#if preset.fps != null && preset.fps > 50}
+          under 20 ms most players clamp to a slow 100 ms — 20 ms (50 fps) is the fastest reliable GIF speed
+        {:else}
+          GIF timing runs in 10 ms steps
+        {/if}
+      </span>
+    </div>
+    <div>
+      <!-- Playback speed ≠ frame timing: 2× drops every other frame so
+           the same motion plays in half the time, while the fps/ms
+           fields above still control how the surviving frames tick.
+           Stored as `speed` on the preset; the encoder clamps 0.1–10. -->
+      <label title="Retimes the clip: 2× plays the same motion twice as fast by dropping frames (output duration halves). Frame timing above still applies to the result. Works best with FPS set — without it, retimed output lands on 30 fps.">
+        Playback speed
+      </label>
+      <select
+        value={String(preset.speed ?? 1)}
+        onchange={(e) => {
+          const v = parseFloat((e.currentTarget as HTMLSelectElement).value);
+          preset.speed = !Number.isFinite(v) || v === 1 ? null : v;
+        }}
+      >
+        <option value="0.5">0.5× (slow motion)</option>
+        <option value="1">1× (normal)</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+        <option value="3">3×</option>
+        <option value="4">4×</option>
+        <option value="6">6×</option>
+        <option value="8">8×</option>
+      </select>
+      {#if (preset.speed ?? 1) !== 1}
+        <span class="hint">
+          {preset.speed}× — same motion in {preset.speed! > 1 ? "less" : "more"} time; frames are {preset.speed! > 1 ? "dropped" : "duplicated"} to fit
+        </span>
+      {/if}
+    </div>
+  {:else if preset.format !== "image"}
     <!-- FPS is meaningless on still-image output; hide it instead of
          leaving a confusing always-empty field on image presets. -->
     <div>
@@ -400,6 +479,20 @@
     margin-bottom: 8px;
   }
   .grid .full { grid-column: 1 / -1; }
+  /* One-line derived-value readout under a field (e.g. "≈ 25 fps"). */
+  .hint {
+    display: block;
+    margin-top: 3px;
+    font-size: var(--fs-11, 11px);
+    color: var(--c-text-4, #9a9a9a);
+    letter-spacing: 0.02em;
+  }
+  /* The clamp-zone warning (≤ 20 ms/frame) — amber, matching the other
+     "this will surprise you" lines in Settings. */
+  .hint-warn {
+    color: var(--c-warning, #d97706);
+    font-weight: 500;
+  }
   .subhead {
     font-family: var(--font-display);
     font-size: var(--fs-14);

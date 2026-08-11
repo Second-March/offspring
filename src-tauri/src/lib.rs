@@ -179,6 +179,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_presets,
             commands::save_presets,
+            commands::save_presets_json,
             commands::reset_presets_to_defaults,
             commands::get_settings,
             commands::save_settings,

@@ -3,7 +3,13 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Preset, Settings, FfmpegStatus, ProgressEvent, UpdateInfo, TrimLast } from "./types";
 
 export const listPresets = () => invoke<Preset[]>("list_presets");
+/** Full save: writes presets.json AND rewrites shell integration
+ *  (registry right-click entries + SendTo shortcuts). Heavy — use on
+ *  deliberate flush points (window close), not per-edit. */
 export const savePresets = (presets: Preset[]) => invoke<void>("save_presets", { presetsIn: presets });
+/** Cheap save: writes presets.json only. The auto-save path — pair with
+ *  a debounced syncIntegrations() so shortcuts catch up afterwards. */
+export const savePresetsJson = (presets: Preset[]) => invoke<void>("save_presets_json", { presetsIn: presets });
 export const resetPresetsToDefaults = () => invoke<Preset[]>("reset_presets_to_defaults");
 
 export const getSettings = () => invoke<Settings>("get_settings");

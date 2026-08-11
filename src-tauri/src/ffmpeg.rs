@@ -506,7 +506,9 @@ fn build_filter_chain_with_width(preset: &Preset, width_override: Option<u32>) -
 /// malformed value can't produce a divide-by-zero (or a negative)
 /// `setpts` expression.
 fn effective_speed(preset: &Preset) -> Option<f32> {
-    let s = preset.modify_speed?;
+    // The persisted preset dropdown wins over the transient Modify-
+    // dialog value; in practice only one is ever set on a given Preset.
+    let s = preset.speed.or(preset.modify_speed)?;
     if !s.is_finite() {
         return None;
     }
@@ -2555,6 +2557,7 @@ pub fn derive_merge_preset(ffmpeg: &Path, first: &Path) -> Preset {
         modify_trim_start_sec: None,
         modify_trim_end_sec: None,
         modify_speed: None,
+        speed: None,
         modify_interp: None,
         watermark: None,
         prores_profile: None,
@@ -2636,6 +2639,7 @@ pub fn derive_grayscale_preset(ffmpeg: &Path, input: &Path) -> Preset {
             modify_trim_start_sec: None,
             modify_trim_end_sec: None,
             modify_speed: None,
+            speed: None,
             modify_interp: None,
             watermark: None,
             prores_profile: None,
@@ -2683,6 +2687,7 @@ pub fn derive_grayscale_preset(ffmpeg: &Path, input: &Path) -> Preset {
         modify_trim_start_sec: None,
         modify_trim_end_sec: None,
         modify_speed: None,
+        speed: None,
         modify_interp: None,
         watermark: None,
         prores_profile: None,
@@ -2776,6 +2781,7 @@ pub fn derive_overlay_preset(ffmpeg: &Path, input: &Path, cfg: OverlayConfig) ->
             modify_trim_start_sec: None,
             modify_trim_end_sec: None,
             modify_speed: None,
+            speed: None,
             modify_interp: None,
             watermark: watermark.clone(),
             prores_profile: None,
@@ -2823,6 +2829,7 @@ pub fn derive_overlay_preset(ffmpeg: &Path, input: &Path, cfg: OverlayConfig) ->
         modify_trim_start_sec: None,
         modify_trim_end_sec: None,
         modify_speed: None,
+        speed: None,
         modify_interp: None,
         watermark: watermark.clone(),
         prores_profile: None,
@@ -4758,6 +4765,7 @@ pub fn derive_modify_preset(
             // here. Pin it off rather than plumbing a `setpts` that
             // would only confuse the single-frame encode.
             modify_speed: None,
+            speed: None,
             modify_interp: None,
             watermark: None,
             prores_profile: None,
@@ -4822,6 +4830,7 @@ pub fn derive_modify_preset(
         modify_trim_start_sec: trim_start_sec,
         modify_trim_end_sec: trim_end_sec,
         modify_speed: Some(speed),
+        speed: None,
         modify_interp: Some(interp),
         watermark: None,
         prores_profile: None,

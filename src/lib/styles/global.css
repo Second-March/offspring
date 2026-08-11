@@ -70,8 +70,18 @@ button:focus-visible {
   box-shadow: var(--shadow-focus), var(--shadow-warm);
   border-color: var(--c-primary);
 }
-button:active { transform: translateY(0.5px); }
+/* Press feedback: a subtle scale beats a nudge — reads as depression
+   without shifting the label baseline. Kept in the 0.95–0.98 band. */
+button:active { transform: scale(0.97); }
 button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+
+/* Buttons routinely carry a leading Neaticon — center it with the label. */
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
 
 button.primary {
   background: var(--c-primary);
@@ -204,7 +214,104 @@ label {
   color: var(--c-text);
 }
 
+/* ---- Inline code chips ----------------------------------------------- */
+/* Global (not component-scoped) because tool copy is injected via
+   {@html} and never receives Svelte's scoping class. */
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--c-surface-3);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--c-text-2);
+}
+
+/* ---- Neaticons -------------------------------------------------------- */
+/* Shared sizing hook; individual surfaces own the actual size. */
+.neaticon {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+  flex: none;
+  overflow: visible;
+  vertical-align: -0.125em;
+}
+button .neaticon { width: 14px; height: 14px; }
+
+/* ---- Range sliders ---------------------------------------------------- */
+/* Custom slider so the thumb's center can actually reach 0% and 100%.
+   The native Chromium thumb is clamped inside the track's bounding
+   box, which leaves visible "untraveled" track to the right of the
+   thumb at max. We restyle from scratch: a flat track + a round thumb
+   positioned by the browser at the value's percentage. `appearance:
+   none` is required for the ::-webkit/::-moz pseudo-elements to take
+   effect. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;          /* hit-target — track is centered inside */
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+  border: none;
+  min-height: 0;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--c-border-strong, rgba(17, 17, 17, 0.14));
+}
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--c-border-strong, rgba(17, 17, 17, 0.14));
+}
+input[type="range"]::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--c-primary, #2196F3);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--c-primary, #2196F3);
+  border: 2px solid var(--c-surface, #fff);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  /* Pull the thumb up so it's centered on the 4px track. */
+  margin-top: -6px;
+  transition: transform var(--dur-fast) var(--ease-out-strong);
+}
+@media (hover: hover) and (pointer: fine) {
+  input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.1);
+  }
+}
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--c-primary, #2196F3);
+  border: 2px solid var(--c-surface, #fff);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+input[type="range"]:focus-visible {
+  outline: none;
+}
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--shadow-focus, 0 0 0 3px rgba(33, 150, 243, 0.24));
+}
+input[type="range"]:focus-visible::-moz-range-thumb {
+  box-shadow: var(--shadow-focus, 0 0 0 3px rgba(33, 150, 243, 0.24));
+}
+
 /* ---- Reduced motion -------------------------------------------------- */
+/* Motion transforms go; opacity/color fades stay useful for
+   comprehension, but a blanket kill is the safe baseline here. */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }

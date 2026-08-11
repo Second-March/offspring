@@ -3,14 +3,21 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import FormatFields from "$lib/components/FormatFields.svelte";
+  import Neaticon from "$lib/components/Neaticon.svelte";
+  import WindowControls from "$lib/components/WindowControls.svelte";
+  import ConfirmDialog, { type ConfirmSpec } from "$lib/components/ConfirmDialog.svelte";
+  import UpdateBanner from "$lib/components/UpdateBanner.svelte";
+  import SettingsPane from "$lib/components/SettingsPane.svelte";
+  import ToolPane from "$lib/components/ToolPane.svelte";
+  import { TOOLS, type ToolId } from "$lib/tools";
+  import { ensureTools } from "$lib/settingsUtils";
+  import { windowDrag } from "$lib/windowDrag";
   import * as api from "$lib/api";
-  import type { Preset, Settings, ToolsSettings, FfmpegStatus, UpdateInfo } from "$lib/types";
+  import type { Preset, Settings, FfmpegStatus, UpdateInfo } from "$lib/types";
 
   let presets = $state<Preset[]>([]);
   let selectedId = $state<string | null>(null);
-  let selectedToolId = $state<
-    "sequence" | "merge" | "grayscale" | "compare" | "overlay" | "trim" | "invert" | "make_square" | "modify" | null
-  >(null);
+  let selectedToolId = $state<ToolId | null>(null);
   let settings = $state<Settings>({});
   let ffmpeg = $state<FfmpegStatus>({ found: false, path: null });
   // Build variant: "standard" includes the FFmpeg downloader, in-app
@@ -29,12 +36,15 @@
   // Tauri command that resolves in <10ms.
   let platform = $state<"windows" | "macos" | "linux">("windows");
   let isMac = $derived(platform === "macos");
-  let tab = $state<"presets" | "settings">("presets");
-  let dirty = $state(false);
+  // The frameless custom titlebar (drag region + window controls) only
+  // exists on Windows — macOS keeps its native chrome + traffic lights.
+  let frameless = $derived(platform === "windows");
+  let tab = $state<"tools" | "presets">("presets");
+  let showSettings = $state(false);
   let saving = $state(false);
   let savedTick = $state(0);
-  // Surfaced next to the Save button when a save is rejected. Null when
-  // the last save succeeded or none has been attempted.
+  // Surfaced in the header when a save is rejected. Null when the last
+  // save succeeded or none has been attempted.
   let saveError = $state<string | null>(null);
   // False until presets + settings have actually been read from disk.
   // Every write path checks this so a failed load can't be persisted
@@ -43,24 +53,10 @@
   // Right-click menu for preset rows. Non-null when visible.
   let ctxMenu = $state<{ x: number; y: number; preset: Preset } | null>(null);
 
-  // Themed confirmation dialog. We don't use the browser's `confirm()`
-  // because in WebView2 it pops the system OS dialog, which breaks the
-  // app's visual language and is jarring inside a Tauri shell. The
-  // modal below renders inline and inherits our tokens.
-  let confirmDialog = $state<{
-    title: string;
-    message: string;
-    confirmLabel: string;
-    onConfirm: () => void | Promise<void>;
-    // Optional overrides so the same modal can serve both
-    // destructive confirms (default "Cancel" + danger primary) and
-    // neutral info-with-action hints (custom cancel label + plain
-    // primary button). Backwards-compatible — existing call sites
-    // omit these and get the original behaviour.
-    cancelLabel?: string;
-    confirmClass?: string;
-    onCancel?: () => void | Promise<void>;
-  } | null>(null);
+  // The single themed dialog every confirm/alert in the app funnels
+  // through — native confirm()/alert() pop the OS dialog inside the
+  // Tauri shell, which breaks the app's visual language.
+  let confirmDialog = $state<ConfirmSpec | null>(null);
 
   // Drag-and-drop reorder state. `dragId` is the preset being dragged;
   // `dragOver` is the row the cursor is currently over with a position
@@ -111,167 +107,49 @@
   let currentVersion = $state<string>("");
 
   const selected = $derived(presets.find((p) => p.id === selectedId) ?? null);
+  const selectedTool = $derived(TOOLS.find((t) => t.id === selectedToolId) ?? null);
 
-  // Static catalog of tools rendered in the sidebar. Keeping the metadata
-  // in-page (rather than fetched from Rust) because it's small, stable, and
-  // the enabled/min-digits state already lives under `settings.tools`.
-  const TOOLS = [
-    {
-      id: "sequence" as const,
-      name: "Sequence",
-      blurb: "Auto-detect numbered image sequences",
-    },
-    {
-      id: "merge" as const,
-      name: "Merge",
-      blurb: "Concatenate multiple videos into one",
-    },
-    {
-      id: "grayscale" as const,
-      name: "Greyscale",
-      blurb: "One-click greyscale copy of any video/GIF",
-    },
-    {
-      id: "compare" as const,
-      name: "Compare",
-      blurb: "Stack videos side-by-side for A/B review",
-    },
-    {
-      id: "overlay" as const,
-      name: "Overlay",
-      blurb: "Burn metadata or aspect-ratio guides into each frame",
-    },
-    {
-      id: "trim" as const,
-      name: "Trim",
-      blurb: "Strip frames from the start and/or end of each file",
-    },
-    {
-      id: "invert" as const,
-      name: "Invert",
-      blurb: "Invert RGB (and optionally clamp to pure 0/255) on images",
-    },
-    {
-      id: "make_square" as const,
-      name: "Make Square",
-      blurb: "Pad shorter edge of an image to match the longer one",
-    },
-    {
-      id: "modify" as const,
-      name: "Modify",
-      blurb: "Crop, flip, reverse — visual dialog with scrubbable preview",
-    },
-  ];
-
-  /** Ensure `settings.tools` exists with full defaults — the Rust side
-   *  fills these in on disk, but a freshly-loaded Settings object might
-   *  still have `undefined` subfields while migrating in. Call this
-   *  before binding to any `settings.tools.*` field. */
-  /** Convert an ffmpeg-style color string (e.g. "white", "0xffcc00",
-   *  "#abc123") to the `#rrggbb` form the native color picker expects.
-   *  Unknown names fall back to white rather than blanking the picker. */
-  function colorToHex(c: string): string {
-    if (!c) return "#ffffff";
-    const trimmed = c.trim();
-    if (trimmed.startsWith("#")) return trimmed.toLowerCase();
-    if (trimmed.startsWith("0x") || trimmed.startsWith("0X")) {
-      return "#" + trimmed.slice(2).toLowerCase();
-    }
-    const named: Record<string, string> = {
-      white: "#ffffff",
-      black: "#000000",
-      red: "#ff0000",
-      green: "#00ff00",
-      blue: "#0000ff",
-      yellow: "#ffff00",
-      cyan: "#00ffff",
-      magenta: "#ff00ff",
-    };
-    return named[trimmed.toLowerCase()] ?? "#ffffff";
-  }
-
-  function ensureTools() {
-    // Work on a local so TypeScript keeps the non-undefined narrowing for
-    // the whole body, then assign back once. Note there is deliberately no
-    // "settings.tools is entirely missing" fast path that spells out every
-    // default inline: a second copy of the defaults is exactly how the
-    // overlay watermark fields went missing from one branch and not the
-    // other. The per-key back-fills below cover both the fresh-install and
-    // the upgrade case.
-    const t = (settings.tools ?? {}) as ToolsSettings;
-
-    if (!t.sequence) {
-      t.sequence = { enabled: true, min_digits: 4, default_fps: 24 };
-    }
-    if (t.sequence.default_fps == null) {
-      t.sequence.default_fps = 24;
-    }
-    if (!t.merge) t.merge = { enabled: true };
-    if (!t.grayscale) t.grayscale = { enabled: true };
-    if (!t.compare) t.compare = { enabled: true };
-    if (!t.trim) t.trim = { enabled: true };
-    if (!t.invert) t.invert = { enabled: true, clamp: false };
-    if (t.invert.clamp == null) t.invert.clamp = false;
-    if (!t.make_square) t.make_square = { enabled: true, fill_mode: "transparent" };
-    if (t.make_square.fill_mode == null) t.make_square.fill_mode = "transparent";
-    if (!t.modify) t.modify = { enabled: true };
-    if (!t.overlay) {
-      t.overlay = {
-        enabled: false,
-        top_left: "filename",
-        top_right: "none",
-        bottom_left: "none",
-        bottom_right: "timecode",
-        custom_text: "",
-        custom_text_2: "",
-        opacity: 90,
-        color: "white",
-        border: false,
-        metadata: true,
-        guides: false,
-        show_16_9: true,
-        show_9_16: true,
-        show_4_5: false,
-        color_16_9: "0xe5484d",
-        color_9_16: "0x00c2d7",
-        color_4_5: "0xf5d90a",
-        guides_opacity: 90,
-        metadata_font_scale: 100,
-        watermark_enabled: false,
-        watermark_path: "",
-        watermark_opacity: 100,
-      };
-    }
-    // Back-fill overlay fields for settings loaded from older installs
-    // so newly-added toggles start from sane defaults.
-    if (t.overlay.custom_text_2 == null) t.overlay.custom_text_2 = "";
-    if (t.overlay.color_16_9 == null) t.overlay.color_16_9 = "0xe5484d";
-    if (t.overlay.color_9_16 == null) t.overlay.color_9_16 = "0x00c2d7";
-    if (t.overlay.color_4_5 == null) t.overlay.color_4_5 = "0xf5d90a";
-    if (t.overlay.metadata == null) t.overlay.metadata = true;
-    if (t.overlay.guides_opacity == null) t.overlay.guides_opacity = 90;
-    if (t.overlay.metadata_font_scale == null) t.overlay.metadata_font_scale = 100;
-    if (t.overlay.watermark_enabled == null) t.overlay.watermark_enabled = false;
-    if (t.overlay.watermark_path == null) t.overlay.watermark_path = "";
-    if (t.overlay.watermark_opacity == null) t.overlay.watermark_opacity = 100;
-
-    settings.tools = t;
+  function showDialog(spec: ConfirmSpec) {
+    confirmDialog = spec;
   }
 
   onMount(async () => {
     await reload();
 
-    // Intercept the window close so the user can't quit on a dirty state
-    // without being warned. We have to register this via Tauri's
+    // Flush any pending auto-save (and any not-yet-run integration
+    // sync) before the window closes. Registered via Tauri's
     // onCloseRequested API rather than `beforeunload` — WebView2 on
     // Windows doesn't fire beforeunload for native window-close actions.
     await getCurrentWindow().onCloseRequested(async (event) => {
-      if (!dirty) return;
-      const ok = confirm(
-        "You have unsaved changes.\n\n" +
-          "Click OK to close without saving, or Cancel to go back and click 'Save and Sync'.",
-      );
-      if (!ok) event.preventDefault();
+      if (!loaded) return;
+      const json = JSON.stringify(presets);
+      const dirty = json !== lastSavedJson;
+      if (!dirty && !syncPending) return;
+      event.preventDefault();
+      clearTimeout(saveTimer);
+      clearTimeout(syncTimer);
+      try {
+        if (dirty) {
+          // Full save: JSON + shell sync in one command.
+          await api.savePresets(presets);
+          lastSavedJson = json;
+        } else {
+          // JSON already on disk — just run the deferred shortcut sync.
+          await api.syncIntegrations();
+        }
+        syncPending = false;
+        getCurrentWindow().destroy();
+      } catch (err) {
+        // The backend refused the state (a negative width, a zero fps…).
+        // Give the user the choice instead of silently losing the edit
+        // or silently blocking the close.
+        confirmDialog = {
+          title: "Couldn't save your changes",
+          message: `${err}\n\nClose anyway and lose the latest edits?`,
+          confirmLabel: "Close anyway",
+          onConfirm: () => getCurrentWindow().destroy(),
+        };
+      }
     });
 
     // No automatic update check at launch — we explicitly do NOT touch
@@ -336,14 +214,12 @@
     });
   });
 
-  async function startDownloadFfmpeg() {
+  function startDownloadFfmpeg() {
     dl = { active: true, phase: "starting", percent: 0, message: "Starting…", error: null };
-    try {
-      await api.downloadFfmpeg();
-    } catch (err) {
+    api.downloadFfmpeg().catch((err) => {
       dl.active = false;
       dl.error = String(err);
-    }
+    });
   }
 
   /// Manual update check. Only the Settings "Check for updates" button
@@ -448,11 +324,12 @@
     // and `{}`, so a rejection here used to leave the editor holding
     // empty placeholders that LOOKED like real state: the next settings
     // toggle serialised `{}` back to disk and reset every preference,
-    // and a Save would have written an empty preset list. Nothing may be
+    // and a save would have written an empty preset list. Nothing may be
     // written until we have actually read what's on disk.
     try {
       presets = await api.listPresets();
       settings = await api.getSettings();
+      lastSavedJson = JSON.stringify(presets);
       loaded = true;
       saveError = null;
     } catch (err) {
@@ -462,7 +339,7 @@
         `Saving is disabled so nothing gets overwritten — restart Offspring to retry.`;
       return;
     }
-    ensureTools();
+    ensureTools(settings);
     ffmpeg = await api.ffmpegStatus();
     // Refresh the build-variant marker once per reload. Cheap (no
     // network, just a constant lookup in Rust) and tolerant of older
@@ -470,15 +347,102 @@
     try { buildVariant = await api.getBuildVariant(); } catch { buildVariant = "standard"; }
     try { platform = await api.getPlatform(); } catch { platform = "windows"; }
     if (!selectedId && !selectedToolId && presets.length > 0) selectedId = presets[0].id;
-    // First-run guidance: if FFmpeg is missing on app open, surface the
-    // Settings tab directly so the big "Download FFmpeg" button is the
-    // first thing they see instead of a silently-broken app.
-    if (!ffmpeg.found) tab = "settings";
+    // First-run guidance: if FFmpeg is missing on app open, open Settings
+    // in the editor pane so the big "Download FFmpeg" button is the first
+    // thing they see instead of a silently-broken app.
+    if (!ffmpeg.found) showSettings = true;
     // macOS one-time Services-onboarding hint. We don't queue behind
     // the FFmpeg-missing prompt — that one just routes to a tab, no
     // modal is shown — so showing the hint immediately is fine.
     if (platform === "macos" && !settings.seen_macos_services_hint) {
       showMacosServicesHint();
+    }
+  }
+
+  // ---- Preset auto-save -------------------------------------------------
+  //
+  // Presets save themselves ~800ms after edits stop, the same way the
+  // tool settings always have. This replaced the manual "Save and Sync"
+  // button: forgetting to press it was the #1 way to lose an edit.
+  //
+  // Two tiers, because the original one-tier version was unusable: the
+  // full save command rewrites registry entries + SendTo shortcuts, and
+  // running that after every typing pause made editing feel broken.
+  //   1. The debounced auto-save writes ONLY presets.json (cheap).
+  //   2. The shell-integration sync trails on its own longer debounce,
+  //      and is flushed on window close so shortcuts never stay stale.
+  //
+  // `lastSavedJson` is the serialized state most recently persisted;
+  // `lastAttemptedJson` stops a failed save from retry-looping every
+  // debounce tick (a new attempt fires only when the user edits again).
+  // Comparing JSON snapshots also cannot drift as preset fields are
+  // added: JSON.stringify reads every property, which is also what
+  // subscribes the effect to all of them.
+  let lastSavedJson = "";
+  let lastAttemptedJson = "";
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  let syncTimer: ReturnType<typeof setTimeout> | undefined;
+  // True from a successful JSON save until the trailing integration
+  // sync has actually run — the close handler flushes it.
+  let syncPending = false;
+
+  $effect(() => {
+    const json = JSON.stringify(presets);
+    if (!loaded) return;
+    if (json === lastSavedJson || json === lastAttemptedJson) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => void savePresetsNow(), 800);
+    return () => clearTimeout(saveTimer);
+  });
+
+  async function savePresetsNow() {
+    if (!loaded) return;
+    const json = JSON.stringify(presets);
+    lastAttemptedJson = json;
+    saving = true;
+    saveError = null;
+    try {
+      await api.savePresetsJson(presets);
+      lastSavedJson = json;
+      savedTick++;
+      scheduleIntegrationSync();
+    } catch (err) {
+      // A preset the backend refuses — a negative width, a zero fps, a
+      // CRF out of range — surfaces here instead of only in the console.
+      saveError = String(err);
+    } finally {
+      saving = false;
+    }
+  }
+
+  /// Trailing shell-integration sync: rewrite the right-click / SendTo
+  /// entries once the user has stopped editing for a while. Re-scheduled
+  /// on every successful save, so a burst of edits costs one sync.
+  function scheduleIntegrationSync() {
+    syncPending = true;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(async () => {
+      try {
+        await api.syncIntegrations();
+        syncPending = false;
+      } catch (err) {
+        // Leave syncPending set so the close-time flush retries.
+        saveError = String(err);
+      }
+    }, 2500);
+  }
+
+  async function saveSettings() {
+    if (!loaded) {
+      saveError = "Can't save — settings were never loaded successfully.";
+      return;
+    }
+    saveError = null;
+    try {
+      await api.saveSettings(settings);
+      ffmpeg = await api.ffmpegStatus();
+    } catch (err) {
+      saveError = String(err);
     }
   }
 
@@ -519,7 +483,6 @@
     presets = [...presets, fresh];
     selectedId = fresh.id;
     selectedToolId = null;
-    dirty = true;
   }
 
   function duplicatePreset(p: Preset) {
@@ -532,14 +495,20 @@
     presets = [...presets, copy];
     selectedId = copy.id;
     selectedToolId = null;
-    dirty = true;
   }
 
   function deletePreset(p: Preset) {
-    if (!confirm(`Delete preset "${p.name}"? This also removes its SendTo shortcut.`)) return;
-    presets = presets.filter((x) => x.id !== p.id);
-    if (selectedId === p.id) selectedId = presets[0]?.id ?? null;
-    dirty = true;
+    confirmDialog = {
+      title: `Delete "${p.name}"?`,
+      message: isMac
+        ? "The preset is removed from the right-click menu as well. This can't be undone."
+        : "This also removes its right-click and SendTo entries. This can't be undone.",
+      confirmLabel: "Delete preset",
+      onConfirm: () => {
+        presets = presets.filter((x) => x.id !== p.id);
+        if (selectedId === p.id) selectedId = presets[0]?.id ?? null;
+      },
+    };
   }
 
   function onDragStart(e: DragEvent, p: Preset) {
@@ -602,48 +571,11 @@
     copy.splice(insertBefore, 0, moved);
     copy.forEach((x, k) => (x.order = k));
     presets = copy;
-    dirty = true;
   }
 
   function onDragEnd() {
     dragId = null;
     dragOver = null;
-  }
-
-  async function save() {
-    if (!loaded) {
-      saveError = "Can't save — presets were never loaded successfully.";
-      return;
-    }
-    saving = true;
-    saveError = null;
-    try {
-      await api.savePresets(presets);
-      markPresetSaved();
-      savedTick++;
-    } catch (err) {
-      // The rejection used to have no `catch` at all, so a preset the
-      // backend refuses — a negative width, a zero fps, a CRF out of
-      // range — made "Save and Sync" spin briefly and then do nothing
-      // at all, with the reason only visible in the webview console.
-      saveError = String(err);
-    } finally {
-      saving = false;
-    }
-  }
-
-  async function saveSettings() {
-    if (!loaded) {
-      saveError = "Can't save — settings were never loaded successfully.";
-      return;
-    }
-    saveError = null;
-    try {
-      await api.saveSettings(settings);
-      ffmpeg = await api.ffmpegStatus();
-    } catch (err) {
-      saveError = String(err);
-    }
   }
 
   // macOS-only Services-onboarding hint. Surfaces the System Settings
@@ -666,6 +598,10 @@
   // and on every window-focus event while in the waiting phase. The
   // poll is cheap (single `defaults read` call) and stops as soon as
   // the dialog leaves the waiting phase.
+  //
+  // Deliberately NOT folded into ConfirmDialog: the waiting phase stays
+  // open across button presses and closes itself on an async signal,
+  // which the one-shot confirm contract can't express.
   type MacosHintState =
     | { phase: "closed" }
     | { phase: "idle" }
@@ -750,6 +686,22 @@
     };
   });
 
+  function switchTab(next: "tools" | "presets") {
+    tab = next;
+    showSettings = false;
+    if (next === "tools") {
+      selectedId = null;
+      if (!selectedToolId) selectedToolId = TOOLS[0]?.id ?? null;
+    } else {
+      selectedToolId = null;
+      if (!selectedId && presets.length > 0) selectedId = presets[0]?.id ?? null;
+    }
+  }
+
+  function toggleSettings() {
+    showSettings = !showSettings;
+  }
+
   function resetDefaults() {
     confirmDialog = {
       title: "Reset to defaults?",
@@ -758,62 +710,16 @@
       confirmLabel: "Reset presets",
       onConfirm: async () => {
         presets = await api.resetPresetsToDefaults();
+        // The backend just wrote this state — mark it saved so the
+        // auto-save effect doesn't immediately re-save it.
+        lastSavedJson = JSON.stringify(presets);
         selectedId = presets[0]?.id ?? null;
-        dirty = false;
       },
     };
   }
-
-  // Track edits to mark dirty.
-  //
-  // This used to enumerate the fields to watch by hand, which failed in
-  // two directions at once. Fields added later — prores_profile,
-  // image_codec, image_quality, strip_metadata, grayscale, timecode,
-  // watermark, guides, overlay, icon — were not on the list, so editing
-  // them left the preset looking clean and the change was thrown away.
-  // And because the effect fired on `selected` itself, merely LOADING
-  // the page or clicking a different preset set dirty = true, so the
-  // editor claimed unsaved changes from the moment it opened.
-  //
-  // Comparing a snapshot fixes both and cannot drift as fields are
-  // added: `JSON.stringify` reads every property, which is also what
-  // subscribes this effect to all of them.
-  let pristineId: string | null = null;
-  let pristineJson: string | null = null;
-  $effect(() => {
-    if (!selected) {
-      pristineId = null;
-      pristineJson = null;
-      dirty = false;
-      return;
-    }
-    const current = JSON.stringify(selected);
-    if (pristineId !== selected.id) {
-      // A different preset just became selected. That's a load, not an
-      // edit — take the baseline and stay clean.
-      pristineId = selected.id;
-      pristineJson = current;
-      dirty = false;
-      return;
-    }
-    dirty = current !== pristineJson;
-  });
-
-  /// Re-baseline the selected preset after a successful save so the
-  /// editor goes clean without waiting for a selection change.
-  function markPresetSaved() {
-    pristineId = selected?.id ?? null;
-    pristineJson = selected ? JSON.stringify(selected) : null;
-    dirty = false;
-  }
 </script>
 
-<svelte:window
-  onclick={() => (ctxMenu = null)}
-  onkeydown={(e) => {
-    if (e.key === "Escape" && confirmDialog) confirmDialog = null;
-  }}
-/>
+<svelte:window onclick={() => (ctxMenu = null)} />
 
 {#if ctxMenu}
   <div
@@ -826,63 +732,18 @@
       type="button"
       role="menuitem"
       onclick={() => { duplicatePreset(ctxMenu!.preset); ctxMenu = null; }}
-    >Duplicate</button>
+    ><Neaticon name="copy" /> Duplicate</button>
     <button
       type="button"
       role="menuitem"
       class="danger"
       onclick={() => { deletePreset(ctxMenu!.preset); ctxMenu = null; }}
-    >Delete</button>
+    ><Neaticon name="trash" /> Delete</button>
   </div>
 {/if}
 
-<!-- Themed confirmation modal. Backdrop click and Escape both cancel.
-     Using `<dialog>` would be cleaner but requires `.showModal()` plumbing
-     and steals focus globally — a custom overlay gives us simpler
-     control over the close-on-backdrop and Escape behavior. -->
 {#if confirmDialog}
-  <div
-    class="modal-backdrop"
-    role="presentation"
-    onclick={async () => {
-      const fn = confirmDialog!.onCancel;
-      confirmDialog = null;
-      if (fn) await fn();
-    }}
-  >
-    <div
-      class="modal"
-      role="alertdialog"
-      aria-labelledby="confirm-title"
-      aria-describedby="confirm-message"
-      onclick={(e) => e.stopPropagation()}
-    >
-      <h3 id="confirm-title" class="modal-title">{confirmDialog.title}</h3>
-      <p id="confirm-message" class="modal-message">{confirmDialog.message}</p>
-      <div class="modal-actions">
-        <button
-          class="ghost"
-          onclick={async () => {
-            const fn = confirmDialog!.onCancel;
-            confirmDialog = null;
-            if (fn) await fn();
-          }}
-        >
-          {confirmDialog.cancelLabel ?? "Cancel"}
-        </button>
-        <button
-          class={confirmDialog.confirmClass ?? "primary danger"}
-          onclick={async () => {
-            const fn = confirmDialog!.onConfirm;
-            confirmDialog = null;
-            await fn();
-          }}
-        >
-          {confirmDialog.confirmLabel}
-        </button>
-      </div>
-    </div>
-  </div>
+  <ConfirmDialog spec={confirmDialog} onclose={() => (confirmDialog = null)} />
 {/if}
 
 <!-- macOS Services-onboarding hint. State machine in script:
@@ -940,106 +801,64 @@
 {/if}
 
 {#if update && update.update_available}
-  <aside class="update-banner" role="status">
-    <span class="update-icon" aria-hidden="true">⬆</span>
-    <span class="update-text">
-      {#if upd.phase === "downloading"}
-        Downloading <strong>{update.latest}</strong>{upd.percent != null ? ` — ${Math.round(upd.percent)}%` : "…"}
-      {:else if upd.phase === "ready"}
-        Version <strong>{update.latest}</strong> is downloaded and
-        {isMac ? "ready to open." : "ready to install."}
-      {:else if upd.phase === "error"}
-        Update <strong>{update.latest}</strong> couldn't download automatically.
-      {:else}
-        Version <strong>{update.latest}</strong> is available (you have {update.current}).
-      {/if}
-    </span>
-    {#if upd.phase === "downloading"}
-      <div class="update-bar" aria-hidden="true">
-        <div
-          class="update-bar-fill"
-          class:indet={upd.percent == null}
-          style={upd.percent != null ? `width: ${Math.round(upd.percent)}%;` : ""}
-        ></div>
-      </div>
-    {:else}
-      <!-- No `disabled` guard needed: this branch only renders when the
-           phase is NOT "downloading" (the progress bar takes over then). -->
-      <button
-        type="button"
-        class="update-btn"
-        onclick={onUpdateClick}
-      >
-        {#if upd.phase === "ready"}
-          <!-- macOS gets a .dmg, not a silent installer: we mount it and
-               quit so the user can drag the new bundle over the running
-               one. "Restart and install" would be a promise we don't keep. -->
-          {isMac ? "Quit and open installer" : "Restart and install"}
-        {:else if upd.phase === "error"}
-          Open download page
-        {:else}
-          Download
-        {/if}
-      </button>
-    {/if}
-    <button
-      type="button"
-      class="update-close"
-      aria-label="Dismiss update notice"
-      onclick={dismissUpdate}
-    >×</button>
-  </aside>
+  <UpdateBanner {update} {upd} {isMac} onaction={onUpdateClick} ondismiss={dismissUpdate} />
 {/if}
 
 <main class="shell">
-  <header class="topbar">
+  <!-- The topbar doubles as the window titlebar on frameless (Windows)
+       builds: empty space drags the window, double-click maximises, and
+       the pill on the right carries minimize/maximize/close. -->
+  <header class="topbar" class:frameless use:windowDrag={frameless}>
     <div class="brand">
-      <h1>Offspring</h1>
-      <span class="tiny">Right-click tools powered by FFmpeg <br> Developed by <span
-          class="brand-link"
-          role="link"
-          tabindex="0"
-          onclick={() => api.openExternalUrl("https://secondmarch.xyz/").catch((e) => console.error("openExternalUrl failed", e))}
-          onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); api.openExternalUrl("https://secondmarch.xyz/").catch((err) => console.error("openExternalUrl failed", err)); } }}
-        >Second March</span></span>
+      <img class="brand-mark" src="/favicon.png" alt="" draggable="false" />
+      <div class="brand-text">
+        <h1>Offspring</h1>
+        <span class="tiny">Right-click tools powered by FFmpeg<br>Developed by <span
+            class="brand-link"
+            role="link"
+            tabindex="0"
+            onclick={() => api.openExternalUrl("https://secondmarch.xyz/").catch((e) => console.error("openExternalUrl failed", e))}
+            onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); api.openExternalUrl("https://secondmarch.xyz/").catch((err) => console.error("openExternalUrl failed", err)); } }}
+          >Second March</span></span>
+      </div>
     </div>
 
     <nav class="tabs">
-      <button class={tab === "presets" ? "tab active" : "tab"} onclick={() => (tab = "presets")}>Main</button>
-      <button class={tab === "settings" ? "tab active" : "tab"} onclick={() => (tab = "settings")}>Settings</button>
+      <button class={tab === "tools" ? "tab active" : "tab"} onclick={() => switchTab("tools")}>Tools</button>
+      <button class={tab === "presets" ? "tab active" : "tab"} onclick={() => switchTab("presets")}>Presets</button>
     </nav>
 
-    <div class="tools">
+    <div class="topbar-right">
       <span class="badge {ffmpeg.found ? 'ok' : 'warn'}" title={ffmpeg.path ?? ''}>
         <span class="dot {ffmpeg.found ? 'ok' : 'warn'}"></span>
         FFmpeg {ffmpeg.found ? "ready" : "missing"}
       </span>
       {#if saveError}
         <span class="tiny save-error" title={saveError}>{saveError}</span>
+      {:else if saving}
+        <span class="tiny saved">Saving…</span>
+      {:else if savedTick > 0}
+        <span class="tiny saved"><Neaticon name="check" /> Saved</span>
       {/if}
-      {#if dirty}
-        <button class="primary save-pulse" onclick={save} disabled={saving}>
-          {saving ? "Saving…" : "Save and Sync"}
-        </button>
-      {:else if savedTick > 0 && !saveError}
-        <span class="tiny saved">Saved</span>
+      {#if frameless}
+        <WindowControls />
       {/if}
     </div>
   </header>
 
-  {#if tab === "presets"}
-    <section class="panes">
-      <aside class="sidebar">
+  <section class="panes">
+    <aside class="sidebar">
+      {#if tab === "tools"}
         <div class="sidebar-head">
           <span class="tiny">TOOLS</span>
         </div>
-        <ul class="tool-list">
+        <ul class="tool-list fill">
           {#each TOOLS as t (t.id)}
             <li
               class="row-item tool-row"
               class:active={selectedToolId === t.id}
-              onclick={() => { selectedToolId = t.id; selectedId = null; }}
-              onkeydown={(e) => e.key === "Enter" && ((selectedToolId = t.id), (selectedId = null))}
+              onclick={() => { selectedToolId = t.id; selectedId = null; showSettings = false; }}
+              onkeydown={(e) => e.key === "Enter" && ((selectedToolId = t.id), (selectedId = null), (showSettings = false))}
               role="button"
               tabindex="0"
             >
@@ -1048,7 +867,7 @@
                 checked={settings.tools?.[t.id]?.enabled ?? (t.id === "overlay" ? false : true)}
                 onclick={(e) => e.stopPropagation()}
                 onchange={(e) => {
-                  ensureTools();
+                  ensureTools(settings);
                   const v = (e.currentTarget as HTMLInputElement).checked;
                   settings.tools![t.id].enabled = v;
                   saveSettings();
@@ -1059,10 +878,10 @@
             </li>
           {/each}
         </ul>
-
-        <div class="sidebar-head tools-head">
+      {:else}
+        <div class="sidebar-head">
           <span class="tiny">PRESETS</span>
-          <button class="ghost" onclick={addPreset} title="Add preset">+ Add</button>
+          <button class="ghost" onclick={addPreset} title="Add preset"><Neaticon name="plus" /> Add</button>
         </div>
         <ul class="preset-list">
           {#each presets as p (p.id)}
@@ -1078,14 +897,15 @@
               ondragover={(e) => onDragOver(e, p)}
               ondrop={(e) => onDrop(e, p)}
               ondragend={onDragEnd}
-              onclick={() => { selectedId = p.id; selectedToolId = null; }}
+              onclick={() => { selectedId = p.id; selectedToolId = null; showSettings = false; }}
               oncontextmenu={(e) => {
                 e.preventDefault();
                 selectedId = p.id;
                 selectedToolId = null;
+                showSettings = false;
                 ctxMenu = { x: e.clientX, y: e.clientY, preset: p };
               }}
-              onkeydown={(e) => e.key === "Enter" && ((selectedId = p.id), (selectedToolId = null))}
+              onkeydown={(e) => e.key === "Enter" && ((selectedId = p.id), (selectedToolId = null), (showSettings = false))}
               role="button"
               tabindex="0"
             >
@@ -1096,1073 +916,81 @@
                 onclick={(e) => e.stopPropagation()}
                 onchange={(e) => {
                   p.enabled = (e.currentTarget as HTMLInputElement).checked;
-                  dirty = true;
                 }}
-                title={isMac ? "Enable this preset" : "Show in SendTo menu"}
+                title={isMac ? "Enable this preset" : "Show in right-click menu"}
               />
               <span class="fmt-tag {p.format}">{p.format.toUpperCase()}</span>
               <span class="preset-name">{p.name}</span>
             </li>
           {/each}
         </ul>
-
-        <div class="sidebar-foot">
-          <button class="ghost" onclick={resetDefaults}>Reset to defaults</button>
-        </div>
-      </aside>
-
-      <section class="editor">
-        {#if selectedToolId === "sequence"}
-          <div class="editor-head">
-            <h2 class="tool-title">Sequence</h2>
-
-          </div>
-          <br>
-          <video class="tool-video" src="/examples/sequence_low.mp4" autoplay muted loop playsinline></video>
-          <p class="muted">
-
-            <br>
-            When you right-click a numbered image (e.g. <code>render_0001.png</code>),
-            Offspring will auto-detect the image sequence and process it. If checked, this means you can just right click on one of the images in the sequence, and click on a preset. The output will take into account the whole sequence. If the preset specifies the FPS, it will use that FPS for the output. If the preset does not specify the FPS, it will use the FPS specified here.
-          </p>
-          <br>
-          <p class="muted tiny">
-            Frames must share the same filename stem, extension, and digit
-            width. <code>render_0001.png</code> / <code>render_0002.png</code>
-            match; <code>render_v01.png</code> / <code>render_v02.png</code>
-            don't (too few digits by default).
-          </p>
-          <br>
-
-          <div class="fields tool-fields">
-            <label class="inline">
-              <input
-                type="checkbox"
-                checked={settings.tools?.sequence.enabled ?? true}
-                onchange={(e) => {
-                  ensureTools();
-                  settings.tools!.sequence.enabled = (e.currentTarget as HTMLInputElement).checked;
-                  saveSettings();
-                }}
-              />
-              <span>Auto-detect image sequences on right-click</span>
-            </label>
-
-            <label class="field">
-              <span>Minimum number padding digits (Eg. File_0001.png has 4 padding digits).</span>
-              <input
-                type="number"
-                min="1"
-                max="10"
-                value={settings.tools?.sequence.min_digits ?? 4}
-                onchange={(e) => {
-                  ensureTools();
-                  const v = parseInt((e.currentTarget as HTMLInputElement).value, 10);
-                  if (Number.isFinite(v) && v >= 1 && v <= 10) {
-                    settings.tools!.sequence.min_digits = v;
-                    saveSettings();
-                  }
-                }}
-              />
-              <span class="muted tiny">
-                Files ending in fewer zero-padded digits than this are treated
-                as standalone images, not sequences. 
-                <br> Default 4 matches the VFX
-                convention (<code>_0001</code>) and filters out version tags
-                like <code>v01</code>.
-              </span>
-            </label>
-
-            <label class="field">
-              <span>Default FPS</span>
-              <select
-                value={String(settings.tools?.sequence.default_fps ?? 24)}
-                onchange={(e) => {
-                  ensureTools();
-                  const v = parseFloat((e.currentTarget as HTMLSelectElement).value);
-                  if (Number.isFinite(v) && v > 0) {
-                    settings.tools!.sequence.default_fps = v;
-                    saveSettings();
-                  }
-                }}
-              >
-                <option value="23.976">23.976 (film / NTSC)</option>
-                <option value="24">24 (film)</option>
-                <option value="25">25 (PAL)</option>
-                <option value="29.97">29.97 (NTSC)</option>
-                <option value="30">30</option>
-                <option value="48">48</option>
-                <option value="50">50</option>
-                <option value="59.94">59.94</option>
-                <option value="60">60</option>
-              </select>
-              <span class="muted tiny">
-                Used when a preset doesn't specify its own FPS — so a
-                sequence→MP4 through a size-based preset plays at the
-                right rate. GIF presets typically set their own FPS and
-                ignore this.
-              </span>
-            </label>
-          </div>
-        {:else if selectedToolId === "merge"}
-          <div class="editor-head">
-            <h2 class="tool-title">Merge</h2>
-          </div>
-          <br>
-          <video class="tool-video" src="/examples/merge_low.mp4" autoplay muted loop playsinline></video>
-          <br>
-          <p class="muted">
-            Merge / Concatenate multiple videos or GIFs into a single file. Offspring
-            detects the output format and settings (dimensions, framerate)
-            from the first selected file, then re-encodes the rest to match.
-            Files are merged in filename order and appended after each other.
-          </p>
-          <br>
-          <p class="muted tiny">
-            Appears as a single <strong>Merge</strong> entry in the right-click
-            menu (and as <code>Offspring Merge</code> in Send to) when two or
-            more files are selected. <br>
-            Enable/disable from the Tools sidebar on the left.
-          </p>
-          <br>
-        {:else if selectedToolId === "grayscale"}
-          <div class="editor-head">
-            <h2 class="tool-title">Greyscale</h2>
-          </div>
-          <br>
-          <video class="tool-video" src="/examples/greyscale_low.mp4" autoplay muted loop playsinline></video>
-          <br>
-          <p class="muted">
-            One-click greyscale copy of any video or GIF. Each selected file
-            is re-encoded to a desaturated version alongside the original,
-            inheriting its format, dimensions, and framerate. <br> <br> This is useful if you want to share a "greyscale" animatic on dailies focusing solely on movement and timing, and not so much on colors or lighting. <br> Output filename
-            is <code>&lt;name&gt;_gray.&lt;ext&gt;</code>.
-          </p>
-          <br>
-          <p class="muted tiny">
-            Appears as a standalone <strong>Greyscale</strong> entry in the
-            right-click menu (and as <code>Offspring Greyscale</code> in
-            Send to). For quality-tuned greyscale conversions, check
-            <em>Greyscale</em> inside any saved preset instead.
-            Enable/disable from the Tools sidebar on the left.
-          </p>
-        {:else if selectedToolId === "compare"}
-          <div class="editor-head">
-            <h2 class="tool-title">Compare</h2>
-          </div>
-          <br>
-          <video class="tool-video" src="/examples/compare_low.mp4" autoplay muted loop playsinline></video>
-          <br>
-          <p class="muted">
-            Stack two or more selected videos side-by-side for A/B review.
-            Each input is scaled to the first file's height and re-timed
-            to a shared framerate. Output is
-            <code>&lt;first-name&gt;_compare.&lt;ext&gt;</code>.
-          </p>
-          <br>
-          <p class="muted tiny">
-            On by default. The entry is hidden unless at least two files
-            are selected. Enable/disable from the Tools sidebar on the left.
-          </p>
-        {:else if selectedToolId === "overlay"}
-          <div class="editor-head">
-            <h2 class="tool-title">Overlay</h2>
-          </div>
-          <br>
-          <video class="tool-video" src="/examples/overlay_low.mp4" autoplay muted loop playsinline></video>
-          <br>
-          <p class="muted">
-            Draw aspect-ratio guide boxes and/or burn filename, timecode,
-            or custom text into each corner. Output is
-            <code>&lt;name&gt;_overlay.&lt;ext&gt;</code>.
-          </p>
-          <br>
-          <p class="muted tiny">
-            Off by default — enable from the Tools sidebar on the left to
-            show an <strong>Overlay</strong> entry in the right-click menu.
-          </p>
-          <br>
-          <div class="fields tool-fields">
-            <label class="inline">
-              <input
-                type="checkbox"
-                checked={settings.tools?.overlay.guides ?? false}
-                onchange={(e) => {
-                  ensureTools();
-                  settings.tools!.overlay.guides = (e.currentTarget as HTMLInputElement).checked;
-                  saveSettings();
-                }}
-              />
-              <span><strong>Add guides</strong></span>
-            </label>
-
-            {#if settings.tools?.overlay.guides}
-              <div class="guide-row indent">
-                <label class="inline">
-                  <input
-                    type="checkbox"
-                    checked={settings.tools?.overlay.show_16_9 ?? true}
-                    onchange={(e) => {
-                      ensureTools();
-                      settings.tools!.overlay.show_16_9 = (e.currentTarget as HTMLInputElement).checked;
-                      saveSettings();
-                    }}
-                  />
-                  <span>16:9 guide</span>
-                </label>
-                <input
-                  type="color"
-                  aria-label="16:9 guide color"
-                  value={colorToHex(settings.tools?.overlay.color_16_9 ?? "0xe5484d")}
-                  oninput={(e) => {
-                    ensureTools();
-                    const hex = (e.currentTarget as HTMLInputElement).value;
-                    settings.tools!.overlay.color_16_9 = "0x" + hex.replace(/^#/, "");
-                  }}
-                  onchange={() => saveSettings()}
-                />
-              </div>
-              <div class="guide-row indent">
-                <label class="inline">
-                  <input
-                    type="checkbox"
-                    checked={settings.tools?.overlay.show_9_16 ?? true}
-                    onchange={(e) => {
-                      ensureTools();
-                      settings.tools!.overlay.show_9_16 = (e.currentTarget as HTMLInputElement).checked;
-                      saveSettings();
-                    }}
-                  />
-                  <span>9:16 guide</span>
-                </label>
-                <input
-                  type="color"
-                  aria-label="9:16 guide color"
-                  value={colorToHex(settings.tools?.overlay.color_9_16 ?? "0x00c2d7")}
-                  oninput={(e) => {
-                    ensureTools();
-                    const hex = (e.currentTarget as HTMLInputElement).value;
-                    settings.tools!.overlay.color_9_16 = "0x" + hex.replace(/^#/, "");
-                  }}
-                  onchange={() => saveSettings()}
-                />
-              </div>
-              <div class="guide-row indent">
-                <label class="inline">
-                  <input
-                    type="checkbox"
-                    checked={settings.tools?.overlay.show_4_5 ?? false}
-                    onchange={(e) => {
-                      ensureTools();
-                      settings.tools!.overlay.show_4_5 = (e.currentTarget as HTMLInputElement).checked;
-                      saveSettings();
-                    }}
-                  />
-                  <span>4:5 guide</span>
-                </label>
-                <input
-                  type="color"
-                  aria-label="4:5 guide color"
-                  value={colorToHex(settings.tools?.overlay.color_4_5 ?? "0xf5d90a")}
-                  oninput={(e) => {
-                    ensureTools();
-                    const hex = (e.currentTarget as HTMLInputElement).value;
-                    settings.tools!.overlay.color_4_5 = "0x" + hex.replace(/^#/, "");
-                  }}
-                  onchange={() => saveSettings()}
-                />
-              </div>
-              <label class="field indent">
-                <span>Guides opacity ({settings.tools?.overlay.guides_opacity ?? 90}%)</span>
-                <input
-                  type="range"
-                  min="10"
-                  max="100"
-                  step="5"
-                  value={settings.tools?.overlay.guides_opacity ?? 90}
-                  oninput={(e) => {
-                    ensureTools();
-                    const v = parseInt((e.currentTarget as HTMLInputElement).value, 10);
-                    if (Number.isFinite(v)) settings.tools!.overlay.guides_opacity = v;
-                  }}
-                  onchange={() => saveSettings()}
-                />
-              </label>
-            {/if}
-
-            <label class="inline">
-              <input
-                type="checkbox"
-                checked={settings.tools?.overlay.metadata ?? true}
-                onchange={(e) => {
-                  ensureTools();
-                  settings.tools!.overlay.metadata = (e.currentTarget as HTMLInputElement).checked;
-                  saveSettings();
-                }}
-              />
-              <span><strong>Add metadata</strong></span>
-            </label>
-
-            {#if settings.tools?.overlay.metadata ?? true}
-              <div class="corners-grid indent">
-                {#each [
-                  { key: "top_left", label: "Top left" },
-                  { key: "top_right", label: "Top right" },
-                  { key: "bottom_left", label: "Bottom left" },
-                  { key: "bottom_right", label: "Bottom right" },
-                ] as corner (corner.key)}
-                  <label class="field">
-                    <span>{corner.label}</span>
-                    <select
-                      value={(settings.tools?.overlay as any)?.[corner.key] ?? "none"}
-                      onchange={(e) => {
-                        ensureTools();
-                        (settings.tools!.overlay as any)[corner.key] =
-                          (e.currentTarget as HTMLSelectElement).value;
-                        saveSettings();
-                      }}
-                    >
-                      <option value="none">None</option>
-                      <option value="filename">Filename</option>
-                      <option value="timecode">Timecode</option>
-                      <option value="custom">Custom 1…</option>
-                      <option value="custom2">Custom 2…</option>
-                    </select>
-                  </label>
-                {/each}
-              </div>
-
-              <label class="field indent">
-                <span>Custom text 1</span>
-                <input
-                  type="text"
-                  placeholder="e.g. SH010"
-                  value={settings.tools?.overlay.custom_text ?? ""}
-                  oninput={(e) => {
-                    ensureTools();
-                    settings.tools!.overlay.custom_text = (e.currentTarget as HTMLInputElement).value;
-                  }}
-                  onchange={() => saveSettings()}
-                />
-                <span class="muted tiny">
-                  Shared across every corner set to "Custom 1…".
-                </span>
-              </label>
-
-              <label class="field indent">
-                <span>Custom text 2</span>
-                <input
-                  type="text"
-                  placeholder="e.g. v03 or Animatic"
-                  value={settings.tools?.overlay.custom_text_2 ?? ""}
-                  oninput={(e) => {
-                    ensureTools();
-                    settings.tools!.overlay.custom_text_2 = (e.currentTarget as HTMLInputElement).value;
-                  }}
-                  onchange={() => saveSettings()}
-                />
-                <span class="muted tiny">
-                  Shared across every corner set to "Custom 2…".
-                </span>
-              </label>
-
-              <label class="field indent">
-                <span>Text opacity ({settings.tools?.overlay.opacity ?? 90}%)</span>
-                <input
-                  type="range"
-                  min="10"
-                  max="100"
-                  step="5"
-                  value={settings.tools?.overlay.opacity ?? 90}
-                  oninput={(e) => {
-                    ensureTools();
-                    const v = parseInt((e.currentTarget as HTMLInputElement).value, 10);
-                    if (Number.isFinite(v)) settings.tools!.overlay.opacity = v;
-                  }}
-                  onchange={() => saveSettings()}
-                />
-              </label>
-
-              <label class="field indent">
-                <span>Font size ({settings.tools?.overlay.metadata_font_scale ?? 100}%)</span>
-                <input
-                  type="range"
-                  min="50"
-                  max="200"
-                  step="10"
-                  value={settings.tools?.overlay.metadata_font_scale ?? 100}
-                  oninput={(e) => {
-                    ensureTools();
-                    const v = parseInt((e.currentTarget as HTMLInputElement).value, 10);
-                    if (Number.isFinite(v)) settings.tools!.overlay.metadata_font_scale = v;
-                  }}
-                  onchange={() => saveSettings()}
-                />
-              </label>
-
-              <label class="field indent">
-                <span>Text color</span>
-                <input
-                  type="color"
-                  value={colorToHex(settings.tools?.overlay.color ?? "white")}
-                  oninput={(e) => {
-                    ensureTools();
-                    const hex = (e.currentTarget as HTMLInputElement).value;
-                    settings.tools!.overlay.color = "0x" + hex.replace(/^#/, "");
-                  }}
-                  onchange={() => saveSettings()}
-                />
-              </label>
-
-              <label class="inline indent">
-                <input
-                  type="checkbox"
-                  checked={settings.tools?.overlay.border ?? false}
-                  onchange={(e) => {
-                    ensureTools();
-                    settings.tools!.overlay.border = (e.currentTarget as HTMLInputElement).checked;
-                    saveSettings();
-                  }}
-                />
-                <span>Add border strip so text doesn't cover the image</span>
-              </label>
-            {/if}
-
-            <label class="inline">
-              <input
-                type="checkbox"
-                checked={settings.tools?.overlay.watermark_enabled ?? false}
-                onchange={(e) => {
-                  ensureTools();
-                  settings.tools!.overlay.watermark_enabled = (e.currentTarget as HTMLInputElement).checked;
-                  saveSettings();
-                }}
-              />
-              <span><strong>Add watermark</strong></span>
-            </label>
-
-            {#if settings.tools?.overlay.watermark_enabled ?? false}
-              <p class="muted tiny indent">
-                Composites a PNG / WebP / TIFF over every frame, scaled to the clip's full resolution. Designed for full-canvas overlays (logo / branding / signature baked into a transparent 1080p / 4K PNG that's the whole frame). JPEG isn't accepted — it has no alpha channel.
-              </p>
-              <div class="row indent" style="margin-top: 6px;">
-                <input
-                  type="text"
-                  readonly
-                  value={settings.tools?.overlay.watermark_path ?? ""}
-                  placeholder="No file picked"
-                  style="flex: 1;"
-                />
-                <button onclick={async () => {
-                  try {
-                    const p = await api.pickWatermarkFile();
-                    if (p) {
-                      ensureTools();
-                      settings.tools!.overlay.watermark_path = p;
-                      await saveSettings();
-                    }
-                  } catch (err) {
-                    alert(String(err));
-                  }
-                }}>Pick…</button>
-                {#if (settings.tools?.overlay.watermark_path ?? "") !== ""}
-                  <button class="ghost" onclick={() => {
-                    ensureTools();
-                    settings.tools!.overlay.watermark_path = "";
-                    saveSettings();
-                  }}>Clear</button>
-                {/if}
-              </div>
-
-              <label class="field indent">
-                <span>Opacity ({settings.tools?.overlay.watermark_opacity ?? 100}%)</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  step="1"
-                  value={settings.tools?.overlay.watermark_opacity ?? 100}
-                  oninput={(e) => {
-                    ensureTools();
-                    const v = parseInt((e.currentTarget as HTMLInputElement).value, 10);
-                    if (Number.isFinite(v)) settings.tools!.overlay.watermark_opacity = v;
-                  }}
-                  onchange={() => saveSettings()}
-                />
-              </label>
-            {/if}
-          </div>
-        {:else if selectedToolId === "trim"}
-          <div class="editor-head">
-            <h2 class="tool-title">Trim</h2>
-          </div>
-          <br>
-          <video class="tool-video" src="/examples/trim_low_modified.mp4" autoplay muted loop playsinline></video>
-          <br>
-          <p class="muted">
-            Frame-accurate trim. Removes a chosen number of frames from the
-            start and/or end of each selected file, and (optionally) cuts a
-            specific frame range out of the middle — joining the two remaining
-            clips into one continuous output. Output filename is
-            <code>&lt;name&gt;_trimmed.&lt;ext&gt;</code>.
-          </p>
-          <br>
-          <p class="muted">
-            Picking "<strong>Trim…</strong>" from the right-click menu opens a
-            small dialog with two side-by-side fields for the start/end strip
-            counts, plus an optional "Remove a specific frame range" toggle
-            for a middle cut. Audio (when present) is trimmed in sync at every cut so
-            video and sound stay aligned.
-          </p>
-          <br>
-          <p class="muted tiny">
-            Just as a warning, some frame boundaries don't always exactly line up with MP4 keyframes, so the file
-            has to be re-encoded to ensure the audio and video are in sync — but Trim is meant to feel seamless, so
-            quality is pushed to visually-lossless. 
-            Enable/disable from the Tools sidebar on the left.
-          </p>
-        {:else if selectedToolId === "invert"}
-          <div class="editor-head">
-            <h2 class="tool-title">Invert</h2>
-          </div>
-          <br>
-          <video class="tool-video" src="/examples/invert_low.mp4" autoplay muted loop playsinline></video>
-          <br>
-          <p class="muted">
-            Invert the RGB channels of an image — black pixels become
-            white, white become black, and colors flip to their
-            opposites. Useful for turning black-on-white masks into
-            white-on-black, or vice versa. The alpha channel is
-            preserved untouched, so a transparent PNG with black
-            opaque content comes out as the same shape rendered
-            white. Output filename is
-            <code>&lt;name&gt;_inverted.&lt;ext&gt;</code>.
-          </p>
-          <br>
-          <p class="muted tiny">
-            Image-only — refuses video inputs with a clear error. Works
-            on PNG, JPEG, WebP, AVIF, BMP, and TIFF.
-          </p>
-          <br>
-          <div class="fields tool-fields">
-            <label class="inline" title="When on, every channel (R, G, B, alpha) is thresholded to either 0 or 255 after the invert. Useful for cleaning up alpha masks where compression has introduced grey noise.">
-              <input
-                type="checkbox"
-                checked={settings.tools?.invert?.clamp ?? false}
-                onchange={(e) => {
-                  ensureTools();
-                  settings.tools!.invert.clamp = (e.currentTarget as HTMLInputElement).checked;
-                  saveSettings();
-                }}
-              />
-              <span><strong>Clamp to 0/255</strong> — every channel becomes pure black, pure white, or fully transparent / opaque. Off by default; turn on for binary masks.</span>
-            </label>
-          </div>
-        {:else if selectedToolId === "modify"}
-          <div class="editor-head">
-            <h2 class="tool-title">Modify</h2>
-          </div>
-          <br>
-          <video class="tool-video" src="/examples/modify_low_modified.mp4" autoplay muted loop playsinline></video>
-          <br>
-          <p class="muted">
-            "Modify" is an <strong>all-in-one</strong> transform dialog. It opens a mini window with a preview of your image or video. <br><br> Inside this window, you have access to a variety of tools to modify a particular image or video. It supports rectangular crop with handle-drag + aspect lock,
-            horizontal flip, vertical flip, and reversing video.
-          </p>
-          <br>
-          <p class="muted">
-            Aspect-ratio dropdown locks the rectangle to
-            <code>Free</code>, <code>Original</code>,
-            <code>16:9</code>, <code>9:16</code>, <code>1:1</code>, or
-            <code>4:3</code>. 
-            Output filename will be
-            <code>&lt;name&gt;_modified.&lt;ext&gt;</code> keeping the
-            source format, but if the
-            <strong>Overwrite original</strong> checkbox is on, the
-            original file will be replaced with the modified verison.
-          </p>
-          <br>
-          <p class="muted tiny">
-            "Reverse" buffers every frame in memory before writing — fast
-            on short clips, slow on long ones. Not all formats of video will be suppoted by the playback unfortunately. MP4, Gif, WebM, and other formats should be supported :)
-          </p>
-        {:else if selectedToolId === "make_square"}
-          <div class="editor-head">
-            <h2 class="tool-title">Make Square</h2>
-          </div>
-          <br>
-          <img class="tool-video" src="/examples/make_square_example.png" alt="Make Square example" />
-          <br>
-          <p class="muted">
-            This tool was specifically added to solve a sometimes annoying issue with textures. It will take any image (e.g. a 1800x600px png) and add transparent marging on the smaller side to make it the same width and height. This is especially useful for textures that are not exactly square, but need to be square for UV reasons or just to avoid scaling manually to match the square aspect ratio.
-            
-          </p>
-          <br>
-          <p class="muted tiny">
-            Image-only — will refuse video inputs with a clear error.
-            Already-square inputs are skipped (the output would be
-            byte-identical so we save the encode pass).
-          </p>
-          <br>
-          <div class="fields tool-fields">
-            <label class="field">
-              <span><strong>Fill</strong> — what to put in the new pixels</span>
-              <select
-                value={settings.tools?.make_square?.fill_mode ?? "transparent"}
-                onchange={(e) => {
-                  ensureTools();
-                  const v = (e.currentTarget as HTMLSelectElement).value as "transparent" | "edge_color";
-                  settings.tools!.make_square.fill_mode = v;
-                  saveSettings();
-                }}
-              >
-                <option value="transparent">Transparent (PNG / WebP / AVIF; JPEG inputs become PNG)</option>
-                <option value="edge_color">Edge color (sampled from top-left pixel)</option>
-              </select>
-            </label>
-          </div>
-        {:else if selected}
-          <div class="editor-head">
-            <input
-              class="title-input"
-              type="text"
-              bind:value={selected.name}
-              placeholder="Preset name"
-            />
-            <div class="row">
-              <button class="ghost" onclick={() => duplicatePreset(selected!)}>Duplicate</button>
-              <button class="danger" onclick={() => deletePreset(selected!)}>Delete</button>
-            </div>
-          </div>
-          {#if !isMac}
-            <p class="muted tiny">Shortcut appears in right-click → Send To as <code>Offspring - {selected.name}.lnk</code></p>
-          {/if}
-
-          <div class="fields">
-            <FormatFields preset={selected} />
-          </div>
-        {:else}
-          <div class="empty">
-            <h2>No preset selected</h2>
-            <p class="muted">Pick one from the sidebar or add a new one.</p>
-          </div>
-        {/if}
-      </section>
-    </section>
-  {:else}
-    <section class="settings-pane">
-      <div class="card">
-        <h3>FFmpeg</h3>
-        <p class="muted tiny">Leave path blank to use the bundled/managed FFmpeg, or point to your own install.</p>
-        <div class="row" style="margin-top: 12px;">
-          <input
-            type="text"
-            value={settings.ffmpeg_path ?? ""}
-            oninput={(e) => {
-              const v = (e.currentTarget as HTMLInputElement).value;
-              settings.ffmpeg_path = v === "" ? null : v;
-            }}
-            placeholder="(default location)"
-          />
-          <button onclick={saveSettings}>Save</button>
-        </div>
-        <p class="tiny" style="margin-top: 8px;">
-          Status: <span class="badge {ffmpeg.found ? 'ok' : 'warn'}">
-            {ffmpeg.found ? ffmpeg.path : "not found"}
-          </span>
-        </p>
-        {#if !ffmpeg.found && ffmpeg.error}
-          <!-- Surface the exact resolution failure inline. Most useful
-               when the user has set a custom path that's invalid:
-               instead of just "not found", they see "isn't named
-               ffmpeg.exe" or "doesn't point at a file" with the path
-               echoed back to them — usually enough to spot the typo. -->
-          <p class="tiny warn-line" style="margin-top: 4px;">{ffmpeg.error}</p>
-        {/if}
-
-        {#if !ffmpeg.found && isStudio}
-          <div class="dl-box">
-            <p class="tiny muted">
-              <strong>Offspring Studio</strong> doesn't download FFmpeg automatically.
-              Grab a <code>win64-gpl</code> build from
-              <a href="https://github.com/BtbN/FFmpeg-Builds/releases" target="_blank" rel="noreferrer">BtbN/FFmpeg-Builds</a>,
-              extract it, and point the path above at <code>ffmpeg.exe</code>.
-            </p>
-          </div>
-        {:else if !ffmpeg.found && !dl.active && dl.phase !== "done"}
-          <div class="dl-box">
-            {#if isMac}
-              <p class="tiny muted">
-                No FFmpeg found. Offspring will download a universal
-                static build from
-                <a href="https://evermeet.cx/ffmpeg/" target="_blank" rel="noreferrer">evermeet.cx</a>
-                into <code>~/Library/Application Support/Offspring/ffmpeg/</code>.
-                Or set a custom path above (e.g.
-                <code>/opt/homebrew/bin/ffmpeg</code> for a Homebrew install).
-              </p>
-            {:else}
-              <p class="tiny muted">
-                No FFmpeg found. Download a static GPL build (~160 MB) from
-                <a href="https://github.com/BtbN/FFmpeg-Builds/releases" target="_blank" rel="noreferrer">BtbN/FFmpeg-Builds</a>
-                into <code>%LOCALAPPDATA%\Offspring\ffmpeg\</code>.
-              </p>
-            {/if}
-            <button class="primary" onclick={startDownloadFfmpeg}>Download FFmpeg</button>
-            {#if dl.error}
-              <p class="tiny err">✕ {dl.error}</p>
-            {/if}
-          </div>
-        {:else if ffmpeg.found && !isStudio && !dl.active}
-          <!-- FFmpeg is present, and this build can replace it. The
-               downloader used to be reachable ONLY when FFmpeg was
-               missing, which meant everyone who installed it once kept
-               that copy forever — including the gyan.dev build shipped
-               through 0.5.x, whose missing dav1d decoder makes some AV1
-               files unplayable. Without this branch the AV1 error hint
-               pointed at a button the affected user could not see. -->
-          <div class="dl-box">
-            {#if ffmpeg.has_dav1d === false && ffmpeg.managed}
-              <p class="tiny warn-line">
-                Your FFmpeg was installed by an older version of Offspring and
-                can't decode some AV1 files (you'd see a "no frames could be
-                read" error on those). Updating replaces it with a current
-                build.
-              </p>
-            {:else if ffmpeg.has_dav1d === false}
-              <p class="tiny warn-line">
-                The FFmpeg at the path above has no dav1d decoder, so some AV1
-                files won't decode. Offspring can't replace it because you've
-                pointed at your own build — update that build, or clear the
-                path above to use Offspring's managed copy.
-              </p>
-            {:else}
-              <p class="tiny muted">
-                Offspring manages its own FFmpeg copy. Re-download it if it
-                stops working or you want the latest build.
-              </p>
-            {/if}
-            {#if ffmpeg.managed || ffmpeg.has_dav1d !== false}
-              <button
-                class={ffmpeg.has_dav1d === false && ffmpeg.managed ? "primary" : ""}
-                onclick={startDownloadFfmpeg}
-              >
-                {ffmpeg.has_dav1d === false ? "Update FFmpeg" : "Re-download FFmpeg"}
-              </button>
-            {/if}
-            {#if dl.error}
-              <p class="tiny err">✕ {dl.error}</p>
-            {/if}
-          </div>
-        {:else if dl.active}
-          <div class="dl-box">
-            <div class="row between">
-              <span class="tiny muted">
-                {dl.phase === "downloading" ? "Downloading FFmpeg…" :
-                 dl.phase === "extracting" ? "Extracting archive…" :
-                 dl.phase === "starting" ? "Starting…" : dl.phase}
-              </span>
-              <span class="tiny muted">
-                {dl.percent != null ? Math.round(dl.percent) + "%" : ""}
-              </span>
-            </div>
-            <div class="bar">
-              <div
-                class="fill"
-                class:indet={dl.percent == null}
-                style={dl.percent != null ? `width: ${Math.round(dl.percent)}%;` : ""}
-              ></div>
-            </div>
-            {#if dl.message}
-              <p class="tiny muted">{dl.message}</p>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      {#if isMac}
-        <div class="card">
-          <h3>Finder integration</h3>
-          <p class="muted tiny" style="margin-top: 6px;">
-            Right-click any video, image, or audio file in Finder and
-            pick <strong>Services → Offspring…</strong> to send it
-            here. macOS hides newly-installed Services entries by
-            default — if you don't see Offspring in the Services
-            submenu, enable it under System Settings → Keyboard →
-            Keyboard Shortcuts → Services → Files and Folders.
-          </p>
-          <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
-            <button
-              class="primary"
-              onclick={async () => {
-                try {
-                  await api.openExternalUrl(
-                    "x-apple.systempreferences:com.apple.preference.keyboard?Services",
-                  );
-                } catch (err) { alert(String(err)); }
-              }}
-            >
-              Open Services Settings
-            </button>
-            <button class="ghost" onclick={showMacosServicesHint}>
-              Show the hint again
-            </button>
-          </div>
-        </div>
-      {:else if isStudio}
-        <div class="card">
-          <h3>Right-click menu</h3>
-          <p class="muted tiny" style="margin-top: 6px;">
-            <strong>Offspring Studio</strong> uses only the classic
-            right-click menu (under "Show more options" on Windows 11).
-            No certificate is ever installed, no MSIX package is
-            registered, and the modern top-level menu is disabled in
-            this build. Configure presets and the menu adjusts
-            automatically.
-          </p>
-        </div>
-      {:else}
-      <div class="card">
-        <h3>Right-click menu</h3>
-        <p class="muted tiny"><br>
-          By default, Offspring lives under Windows 11's "Show more options" (the classic right-click menu).
-          Enabling the modern menu below moves it to the top-level right-click menu.
-        </p>
-
-        <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 10px;">
-
-          <label class="inline">
-            <input
-              type="checkbox"
-              checked={settings.modern_menu_enabled ?? false}
-              onchange={async (e) => {
-                const checked = (e.currentTarget as HTMLInputElement).checked;
-                settings.modern_menu_enabled = checked;
-                await saveSettings();
-                // Explorer caches the modern-menu handler list — new
-                // CLSIDs only become visible once Explorer re-launches.
-                // We restart unconditionally so the user gets a
-                // consistent "flip toggle → menu updates" experience.
-                try { await api.restartExplorer(); } catch (err) { alert(String(err)); }
-              }}
-            />
-            <span>Integrate with the <strong>Windows 11 right-click menu</strong></span>
-          </label>
-          <label class="inline" title="When on, the modern right-click menu shows TWO separate top-level entries — Offspring Presets and Offspring Tools — instead of one unified Offspring entry. Mirrors the classic right-click menu's split layout. Toggling registers / unregisters separate MSIX packages, so an Explorer restart fires automatically. Disabled when the modern menu integration itself is off.">
-            <input
-              type="checkbox"
-              checked={settings.modern_menu_split_layout ?? false}
-              disabled={!(settings.modern_menu_enabled ?? false)}
-              onchange={async (e) => {
-                settings.modern_menu_split_layout = (e.currentTarget as HTMLInputElement).checked;
-                await saveSettings();
-                // Toggling swaps which MSIX packages are registered
-                // (Unified ↔ Presets+Tools); Explorer needs to be
-                // restarted to drop its cached shell-ext list and
-                // pick up the new top-level entries.
-                try { await api.restartExplorer(); } catch (err) { alert(String(err)); }
-              }}
-            />
-            <span>Split modern menu into <strong>Offspring Presets</strong> + <strong>Offspring Tools</strong> top-level entries</span>
-          </label>
-          <p class="muted tiny warn-line">
-            ⚠ Options above may briefly restart Windows Explorer
-            (Opened File Explorer windows close).
-          </p>
-
-          <div style="margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border, #2a2a2a);">
-            <p class="muted tiny" style="margin: 0 0 8px 0;">
-              If the Windows 11 right-click menu entries aren't showing up, click below to re-register the modern-menu package for your user (no admin required).
-            </p>
-            <button
-              onclick={async () => {
-                try {
-                  await api.setupModernMenu();
-                  settings.modern_menu_enabled = true;
-                  try { settings = await api.getSettings(); } catch {}
-                  alert("Modern menu reinstalled. Windows Explorer will restart briefly so the new entries appear.");
-                  try { await api.restartExplorer(); } catch (err) { alert(String(err)); }
-                } catch (err) {
-                  // A failed registration leaves the classic menu
-                  // untouched (setup_modern_menu only commits the
-                  // setting after Add-AppxPackage succeeds), so say so
-                  // — otherwise this reads as "the app is broken" when
-                  // the user in fact still has a working right-click
-                  // menu one click away under "Show more options".
-                  alert(
-                    "Couldn't set up the Windows 11 top-level menu.\n\n" +
-                    String(err) +
-                    "\n\nOffspring itself is fine: right-click a file and choose " +
-                    "\"Show more options\" (or press Shift+F10) to use it from the " +
-                    "classic menu."
-                  );
-                }
-              }}
-            >
-              Reinstall Windows 11 "Right-click menu" item 
-            </button>
-          </div>
-        </div>
-      </div>
       {/if}
 
-      <div class="card">
-        <h3>Updates</h3>
-        <p class="muted tiny">
-          Current version: <strong>{currentVersion || "…"}</strong>
-          {#if isStudio}
-            <span class="badge">Studio</span>
-          {/if}
-        </p>
-        {#if isStudio}
-          <p class="muted tiny" style="margin-top: 8px;">
-            <strong>Studio</strong> doesn't include the in-app
-            updater. Check
-            <a href="https://github.com/second-march/offspring/releases" target="_blank" rel="noreferrer">
-              the GitHub releases page
-            </a>
-            manually and download a fresh Studio installer when a new
-            version ships.
-          </p>
-        {:else}
-        <div class="row" style="margin-top: 12px;">
-          <button onclick={() => checkUpdate({ manual: true })} disabled={updateCheck.checking}>
-            {updateCheck.checking ? "Checking…" : "Check for updates"}
-          </button>
-        </div>
-        {#if updateCheck.manualResult}
-          <p class="tiny muted" style="margin-top: 8px;">{updateCheck.manualResult}</p>
-        {/if}
-        {#if update?.update_available && update.release_notes}
-          <!-- Release notes from the latest GitHub release body —
-               rendered as plain text with preserved newlines (no
-               markdown library; the GitHub-side authoring keeps the
-               source readable as-is). Shown only when an update is
-               actually available, so users see "what's new" before
-               deciding to click Download. -->
-          <div class="release-notes">
-            <div class="tiny muted release-notes-head">
-              What's new in {update.latest}
-            </div>
-            <pre class="release-notes-body">{update.release_notes}</pre>
-          </div>
-        {/if}
-        {/if}
+      <div class="sidebar-foot">
+        <button class="ghost settings-btn" class:active={showSettings} onclick={toggleSettings}>
+          <Neaticon name="gear-setting" />
+          Settings
+        </button>
       </div>
+    </aside>
 
-      <div class="card">
-        <h3>Data folders</h3>
-        <p class="muted tiny">
-          {#if isMac}
-            Presets & settings: <code>~/Library/Application Support/Offspring</code>.
-            Logs: <code>~/Library/Application Support/Offspring/debug.log</code>
+    <section class="editor">
+      {#if showSettings}
+        <SettingsPane
+          {settings}
+          {ffmpeg}
+          {dl}
+          {isMac}
+          {isStudio}
+          {currentVersion}
+          {updateCheck}
+          {update}
+          onSaveSettings={saveSettings}
+          onDownloadFfmpeg={startDownloadFfmpeg}
+          onCheckUpdate={() => checkUpdate({ manual: true })}
+          onResetDefaults={resetDefaults}
+          onShowMacosHint={showMacosServicesHint}
+          {showDialog}
+        />
+      {:else if tab === "tools" && selectedTool}
+        <ToolPane tool={selectedTool} {settings} onSaveSettings={saveSettings} {showDialog} />
+      {:else if tab === "presets" && selected}
+        <div class="editor-head">
+          <input
+            class="title-input"
+            type="text"
+            bind:value={selected.name}
+            placeholder="Preset name"
+          />
+          <div class="row">
+            <button class="ghost" onclick={() => duplicatePreset(selected!)}><Neaticon name="copy" /> Duplicate</button>
+            <button class="danger" onclick={() => deletePreset(selected!)}><Neaticon name="trash" /> Delete</button>
+          </div>
+        </div>
+        {#if !isMac}
+          <p class="muted tiny">Shortcut appears in right-click → Send To as <code>Offspring - {selected.name}.lnk</code></p>
+        {/if}
+
+        <div class="fields">
+          <FormatFields preset={selected} />
+        </div>
+      {:else}
+        <div class="empty">
+          {#if tab === "tools"}
+            <h2>No tool selected</h2>
+            <p class="muted">Pick one from the sidebar.</p>
           {:else}
-            Presets & settings: <code>%APPDATA%\Offspring</code>.
-            Logs: <code>%LOCALAPPDATA%\Offspring\debug.log</code>
-          {/if}
-        </p>
-        <div class="row" style="margin-top: 12px;">
-          <button onclick={api.openDataFolder}>Open data folder</button>
-          <button
-            onclick={api.openLogFolder}
-            title={isMac
-              ? "Reveals debug.log in Finder"
-              : "Opens %LOCALAPPDATA%\\Offspring with debug.log selected"}
-          >Open log folder</button>
-          {#if !isMac}
-            <button onclick={api.syncIntegrations}>Re-sync right-click menus</button>
+            <h2>No preset selected</h2>
+            <p class="muted">Pick one from the sidebar or add a new one.</p>
           {/if}
         </div>
-      </div>
+      {/if}
     </section>
-  {/if}
+  </section>
 </main>
 
 <style>
   .shell { display: flex; flex-direction: column; height: 100vh; }
-
-  label.inline {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    font-size: var(--fs-13, 13px);
-    color: var(--c-text);
-    margin: 0;
-    cursor: pointer;
-  }
-  label.inline input[type="checkbox"] {
-    margin-top: 2px;
-    flex-shrink: 0;
-  }
-
-  .update-banner {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 16px;
-    background: var(--c-accent, #3b82f6);
-    color: #fff;
-    font-size: var(--fs-14, 14px);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.15);
-  }
-  .update-icon {
-    font-weight: bold;
-    opacity: 0.9;
-  }
-  .update-text {
-    flex: 1;
-  }
-  .update-text strong {
-    font-weight: 600;
-  }
-  .update-btn {
-    background: rgba(255, 255, 255, 0.22);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    padding: 4px 12px;
-    border-radius: var(--r-sm, 6px);
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .update-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.32);
-  }
-  .update-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .update-bar {
-    width: 140px;
-    height: 6px;
-    background: rgba(255, 255, 255, 0.25);
-    border-radius: var(--r-pill, 999px);
-    overflow: hidden;
-  }
-  .update-bar-fill {
-    height: 100%;
-    background: #fff;
-    transition: width 200ms ease;
-  }
-  .update-bar-fill.indet {
-    width: 40%;
-    animation: update-slide 1.2s ease-in-out infinite;
-  }
-  @keyframes update-slide {
-    0%   { transform: translateX(-120%); }
-    100% { transform: translateX(260%); }
-  }
-  .update-close {
-    background: transparent;
-    color: #fff;
-    border: none;
-    font-size: 18px;
-    line-height: 1;
-    padding: 2px 6px;
-    cursor: pointer;
-    opacity: 0.8;
-  }
-  .update-close:hover {
-    opacity: 1;
-  }
 
   .topbar {
     display: grid;
@@ -2171,8 +999,24 @@
     padding: 8px 16px;
     border-bottom: 1px solid var(--c-border);
     background: var(--c-surface);
+    /* Chrome isn't content: dragging or double-clicking the bar
+       shouldn't leave a stray text selection. */
+    -webkit-user-select: none;
+    user-select: none;
   }
-  .brand { display: flex; flex-direction: column; gap: 0; }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .brand-mark {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex: 0 0 auto;
+  }
+  .brand-text { display: flex; flex-direction: column; gap: 0; }
   .brand h1 { font-size: var(--fs-20); line-height: 1.1; }
   /* Inline "Second March" credit. Reads as plain text — only the cursor
      and hover-fade hint that it's interactive. We use a <span role="link">
@@ -2181,7 +1025,7 @@
      specifically didn't want. The span has zero defaults to fight. */
   .brand-link {
     cursor: pointer;
-    transition: opacity 0.15s ease;
+    transition: opacity var(--dur-base) ease;
     /* Outline only on keyboard focus so mouse users see no chrome. */
     outline: none;
   }
@@ -2203,6 +1047,7 @@
     min-height: 0;
     border-radius: var(--r-sm);
     font-size: var(--fs-14);
+    transition: color var(--dur-base) ease, background var(--dur-base) ease;
   }
   .tab:hover { background: transparent; color: var(--c-text); }
   .tab.active {
@@ -2210,14 +1055,19 @@
     color: var(--c-text);
     box-shadow: var(--shadow-whisper);
   }
-  .tools { justify-self: end; display: flex; align-items: center; gap: 8px; }
-  .saved { color: var(--c-text-3); }
+  .topbar-right { justify-self: end; display: flex; align-items: center; gap: 8px; }
+  .saved {
+    color: var(--c-text-3);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
   /* Save failures used to be invisible outside the console. Kept on one
      line with the full text in the tooltip so a long backend message
-     can't push the Save button out of the header. */
+     can't push the window controls out of the header. */
   .save-error {
     color: var(--c-danger);
-    max-width: 46ch;
+    max-width: 40ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2242,6 +1092,7 @@
   }
   .sidebar-head button {
     min-height: 0; padding: 2px 8px; font-size: var(--fs-12);
+    display: inline-flex; align-items: center; gap: 4px;
   }
   .preset-list {
     list-style: none;
@@ -2256,7 +1107,7 @@
     padding: 4px 6px;
     border-radius: var(--r-sm);
     cursor: pointer;
-    transition: background 120ms ease;
+    transition: background var(--dur-fast) ease;
     font-size: var(--fs-13, 13px);
   }
   .ctx-menu {
@@ -2271,6 +1122,11 @@
     border: 1px solid var(--c-border);
     border-radius: var(--r-sm);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    animation: ctx-pop var(--dur-fast) var(--ease-out-strong);
+  }
+  @keyframes ctx-pop {
+    from { opacity: 0; transform: scale(0.97); }
+    to   { opacity: 1; transform: scale(1); }
   }
   .ctx-menu button {
     all: unset;
@@ -2279,15 +1135,16 @@
     font-size: var(--fs-13, 13px);
     cursor: pointer;
     color: var(--c-text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .ctx-menu button:hover { background: var(--c-surface-2); }
   .ctx-menu button.danger { color: var(--c-danger, #b91c1c); }
   .ctx-menu button.danger:hover { background: var(--c-danger-tint, rgba(185, 28, 28, 0.12)); }
 
-  /* Confirmation modal — full-screen scrim with a centered card. The
-     scrim catches outside clicks (handled in markup) and dims the app
-     so the user's eye lands on the card. z-index sits above the
-     ctx-menu so a stacked confirmation always wins. */
+  /* macOS Services hint modal — matches ConfirmDialog's visual language
+     but stays bespoke (see the state-machine comment in the script). */
   .modal-backdrop {
     position: fixed;
     inset: 0;
@@ -2297,7 +1154,7 @@
     align-items: center;
     justify-content: center;
     padding: 24px;
-    animation: modal-fade 120ms ease-out;
+    animation: modal-fade var(--dur-fast) ease-out;
   }
   .modal {
     background: var(--c-surface);
@@ -2308,7 +1165,7 @@
     padding: 22px 22px 18px;
     max-width: 420px;
     width: 100%;
-    animation: modal-pop 140ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+    animation: modal-pop var(--dur-base) var(--ease-out-strong);
   }
   .modal-title {
     margin: 0 0 8px;
@@ -2326,23 +1183,15 @@
     justify-content: flex-end;
     gap: 8px;
   }
-  .modal-actions button.danger {
-    background: var(--c-danger, #b91c1c);
-    border-color: var(--c-danger, #b91c1c);
-    color: #fff;
-  }
-  .modal-actions button.danger:hover {
-    background: var(--c-danger-hover, #991414);
-    border-color: var(--c-danger-hover, #991414);
-  }
   @keyframes modal-fade {
     from { opacity: 0; }
     to   { opacity: 1; }
   }
   @keyframes modal-pop {
-    from { opacity: 0; transform: translateY(6px) scale(0.98); }
+    from { opacity: 0; transform: translateY(4px) scale(0.97); }
     to   { opacity: 1; transform: translateY(0) scale(1); }
   }
+
   .row-item:hover { background: var(--c-surface); }
   .row-item.active {
     background: var(--c-surface);
@@ -2377,7 +1226,7 @@
     cursor: grab;
     user-select: none;
     opacity: 0.4;
-    transition: opacity 120ms ease;
+    transition: opacity var(--dur-fast) ease;
   }
   .row-item:hover .grip,
   .row-item.active .grip { opacity: 1; }
@@ -2393,16 +1242,16 @@
   .row-item[draggable="true"] { cursor: pointer; }
   .row-item[draggable="true"]:active .grip { cursor: grabbing; }
 
-  .tools-head {
-    margin-top: 6px;
-    border-top: 1px solid var(--c-border);
-    padding-top: 10px;
-  }
   .tool-list {
     list-style: none;
     padding: 2px 6px;
     margin: 0;
     flex: 0 0 auto;
+  }
+  .tool-list.fill {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
   .tool-row { padding: 6px; }
   .tool-name {
@@ -2412,171 +1261,32 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .tool-title {
-    margin: 0;
-    font-size: var(--fs-18, 18px);
-    font-weight: 600;
-  }
-  /* Illustrative loop for each tool's editor pane. Capped width so it
-     doesn't dominate the layout on wide windows; auto height keeps the
-     source aspect ratio. Muted + loop + autoplay + playsinline is the
-     "silent ambient demo" combo every browser allows without a gesture. */
-  .tool-video {
-    display: block;
-    width: 100%;
-    max-width: 480px;
-    height: auto;
-    /* `auto` left/right margins center the (block-level) video inside
-       its block parent — `.editor` isn't a flex container, so
-       `align-self` had no effect here. */
-    margin: 12px auto 8px;
-    border-radius: 4px;
-    background: #000;
-    box-shadow: 0 1px 10px rgba(0, 0, 0, 0.25);
-  }
-  /* Custom slider so the thumb's center can actually reach 0% and 100%.
-     The native Chromium thumb is clamped inside the track's bounding
-     box, which leaves visible "untraveled" track to the right of the
-     thumb at max. We restyle from scratch: a flat track + a round thumb
-     positioned by the browser at the value's percentage. The thumb's
-     own width of 16px sits ON the track ends rather than being pushed
-     in by half its width, so 0/100 feel correct. `appearance: none` is
-     required for the ::-webkit/::-moz pseudo-elements to take effect. */
-  input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 18px;          /* hit-target — track is centered inside */
-    background: transparent;
-    cursor: pointer;
-    margin: 0;
-  }
-  input[type="range"]::-webkit-slider-runnable-track {
-    height: 4px;
-    border-radius: 2px;
-    background: var(--c-border-strong, rgba(17, 17, 17, 0.14));
-  }
-  input[type="range"]::-moz-range-track {
-    height: 4px;
-    border-radius: 2px;
-    background: var(--c-border-strong, rgba(17, 17, 17, 0.14));
-  }
-  input[type="range"]::-moz-range-progress {
-    height: 4px;
-    border-radius: 2px;
-    background: var(--c-primary, #2196F3);
-  }
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--c-primary, #2196F3);
-    border: 2px solid var(--c-surface, #fff);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-    /* Pull the thumb up so it's centered on the 4px track. */
-    margin-top: -6px;
-    transition: transform 0.1s ease;
-  }
-  input[type="range"]::-webkit-slider-thumb:hover {
-    transform: scale(1.1);
-  }
-  input[type="range"]::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: var(--c-primary, #2196F3);
-    border: 2px solid var(--c-surface, #fff);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-  }
-  input[type="range"]:focus-visible {
-    outline: none;
-  }
-  input[type="range"]:focus-visible::-webkit-slider-thumb {
-    box-shadow: var(--shadow-focus, 0 0 0 3px rgba(33, 150, 243, 0.24));
-  }
-  input[type="range"]:focus-visible::-moz-range-thumb {
-    box-shadow: var(--shadow-focus, 0 0 0 3px rgba(33, 150, 243, 0.24));
-  }
-  .tool-fields {
-    margin-top: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-  .tool-fields .field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .tool-fields .field > input[type="number"] {
-    max-width: 120px;
-  }
-  /* Color swatches next to each guide-ratio checkbox so the label
-     mirrors the drawbox color the user will see in the output. */
-  .swatch {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 2px;
-    margin-left: 4px;
-    vertical-align: middle;
-    border: 1px solid var(--c-border);
-  }
-  .swatch.red { background: #e5484d; }
-  .swatch.cyan { background: #00c2d7; }
-  .swatch.yellow { background: #f5d90a; }
 
-  /* Two-column grid for the four overlay corner dropdowns. Collapses to
-     a single column on very narrow panes. */
-  .corners-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px 14px;
+  .sidebar-foot {
+    padding: 8px;
+    border-top: 1px solid var(--c-border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
-  @media (max-width: 520px) {
-    .corners-grid { grid-template-columns: 1fr; }
-  }
-  /* Sub-checkboxes for the optional Guides block inside Overlay. */
-  .tool-fields .inline.indent {
-    margin-left: 22px;
-  }
-  /* Paired checkbox + color picker row for per-ratio guide colors. */
-  .guide-row {
+  .settings-btn {
+    width: 100%;
     display: flex;
     align-items: center;
-    gap: 10px;
+    justify-content: flex-start;
+    gap: 8px;
+    font-size: var(--fs-14);
+    padding: 8px 10px;
   }
-  .guide-row.indent {
-    margin-left: 22px;
+  .settings-btn :global(.neaticon) {
+    width: 16px;
+    height: 16px;
   }
-  .guide-row input[type="color"] {
-    width: 28px;
-    height: 22px;
-    padding: 0;
-    border: 1px solid var(--c-border);
-    border-radius: 4px;
-    cursor: pointer;
+  .sidebar-foot button.active {
+    color: var(--c-text);
+    background: var(--c-surface);
+    box-shadow: var(--shadow-ring);
   }
-
-  @keyframes save-pulse-ring {
-    0%   { box-shadow: 0 0 0 0 var(--c-primary-ring); }
-    70%  { box-shadow: 0 0 0 8px rgba(0, 0, 0, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
-  }
-  .save-pulse {
-    animation: save-pulse-ring 1.6s ease-out infinite;
-  }
-  .save-pulse:hover,
-  .save-pulse:focus-visible {
-    animation: none;
-  }
-  .sidebar-foot {
-    padding: 6px 10px;
-    border-top: 1px solid var(--c-border);
-  }
-  .sidebar-foot button { font-size: var(--fs-12); padding: 4px 8px; min-height: 0; }
 
   .editor {
     padding: 12px 18px 16px;
@@ -2605,103 +1315,10 @@
     border-color: var(--c-primary);
     box-shadow: 0 0 0 3px var(--c-primary-ring);
   }
-  .editor-head button { font-size: var(--fs-12); padding: 4px 10px; min-height: 0; }
+  .editor-head button {
+    font-size: var(--fs-12); padding: 4px 10px; min-height: 0;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
   .fields { margin-top: 10px; }
   .empty { text-align: center; padding: 40px 20px; color: var(--c-text-3); }
-
-  .settings-pane {
-    padding: 14px 18px;
-    display: grid;
-    gap: 10px;
-    max-width: 640px;
-    width: 100%;
-    margin: 0 auto;
-    overflow-y: auto;
-  }
-  .settings-pane .card { padding: var(--sp-3); }
-  .settings-pane h3 { margin-bottom: 2px; }
-
-  code {
-    font-family: var(--font-mono);
-    font-size: 0.88em;
-    background: var(--c-surface-3);
-    padding: 1px 5px;
-    border-radius: 3px;
-    color: var(--c-text-2);
-  }
-
-  /* FFmpeg download block — fits inside the FFmpeg settings card. */
-  .dl-box {
-    margin-top: 10px;
-    padding: 10px 12px;
-    background: var(--c-canvas-muted);
-    border: 1px solid var(--c-border);
-    border-radius: var(--r-lg);
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .dl-box a {
-    color: var(--c-primary);
-    text-decoration: underline;
-    text-decoration-color: var(--c-primary-ring);
-    text-underline-offset: 2px;
-  }
-  .dl-box .row.between { display: flex; justify-content: space-between; gap: 8px; }
-  .dl-box .bar {
-    height: 6px;
-    background: var(--c-surface-3);
-    border-radius: var(--r-pill);
-    overflow: hidden;
-  }
-  .dl-box .fill {
-    height: 100%;
-    background: var(--c-primary);
-    transition: width 200ms ease;
-  }
-  .dl-box .fill.indet {
-    width: 40%;
-    animation: slide 1.2s ease-in-out infinite;
-  }
-  @keyframes slide {
-    0%   { transform: translateX(-100%); }
-    100% { transform: translateX(250%); }
-  }
-  .dl-box .err { color: var(--c-danger); }
-  /* Red-orange caution stripe used next to toggles whose change
-     triggers an Explorer restart. Slightly stronger than `.muted`
-     so the user actually reads it before clicking. */
-  .warn-line {
-    color: #d97706;
-    margin-top: 6px;
-    font-weight: 500;
-  }
-  /* "What's new in X.Y.Z" panel shown under the manual-check button
-     when an update is available. Plain-text rendering of the GitHub
-     release body — no markdown formatter, no XSS surface. Capped
-     height with overflow-y so a long changelog doesn't push the rest
-     of the Settings pane off-screen. */
-  .release-notes {
-    margin-top: 12px;
-    border-top: 1px solid var(--c-border, rgba(0, 0, 0, 0.1));
-    padding-top: 10px;
-  }
-  .release-notes-head {
-    font-weight: 600;
-    margin-bottom: 6px;
-  }
-  .release-notes-body {
-    margin: 0;
-    max-height: 200px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-family: var(--font-mono, monospace);
-    font-size: var(--fs-12);
-    color: var(--c-text-2);
-    background: var(--c-surface-2, rgba(0, 0, 0, 0.04));
-    padding: 8px 10px;
-    border-radius: 4px;
-    line-height: 1.4;
-  }
 </style>

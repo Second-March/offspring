@@ -51,6 +51,11 @@ export interface Preset {
    *  Consolas. Independent of format. Also available as an Overlay
    *  feature when that tool lands. */
   timecode?: boolean | null;
+  /** Persisted playback-speed multiplier (the preset editor's
+   *  "Playback speed" dropdown). 2 plays the clip twice as fast by
+   *  dropping frames; null/1 leaves timing alone. Clamped 0.1–10 by
+   *  the encoder. */
+  speed?: number | null;
   icon?: string | null;
   order: number;
 }
@@ -58,8 +63,6 @@ export interface Preset {
 export interface Settings {
   ffmpeg_path?: string | null;
   verbosity?: string | null;
-  pause_after?: boolean | null;
-  descriptive_names?: boolean | null;
   /** Mirror presets into the user's Windows SendTo folder. Off by default
    *  — the registry right-click menu covers the same use-case and is more
    *  discoverable on Windows 11. */

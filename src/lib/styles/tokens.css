@@ -131,7 +131,12 @@
   --tap-min: 32px; /* compact desktop baseline */
 
   /* ---- Motion --------------------------------------------------------- */
+  /* Custom curves over built-ins; never ease-in for UI. Entering /
+     exiting elements take the strong ease-out; on-screen morphs take
+     the strong in-out. All UI durations stay under 300ms. */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out-strong:    cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
   --dur-fast:    120ms;
   --dur-base:    180ms;
   --dur-slow:    260ms;

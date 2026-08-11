@@ -79,6 +79,18 @@ pub fn save_presets(presets_in: Vec<Preset>) -> Result<(), String> {
     Ok(())
 }
 
+/// Persist presets to disk WITHOUT rewriting shell integration.
+///
+/// The frontend auto-saves on a short debounce while the user types, and
+/// running `integration::sync_all` (registry entries + SendTo shortcut
+/// rewrites) after every typing pause made the editor feel broken. The
+/// cheap JSON write happens here; the heavy sync runs separately via
+/// `sync_integrations` on a longer debounce and on window close.
+#[tauri::command]
+pub fn save_presets_json(presets_in: Vec<Preset>) -> Result<(), String> {
+    presets::save_presets(&presets_in).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn reset_presets_to_defaults() -> Result<Vec<Preset>, String> {
     let d = defaults::default_presets();
@@ -2052,6 +2064,16 @@ pub fn open_main_window(app: &tauri::AppHandle) -> anyhow::Result<()> {
         // We don't use native file-drop in the main window — the settings
         // UI is pure HTML5 DnD — so disable the interception here.
         .disable_drag_drop_handler();
+    // Frameless on Windows: the frontend topbar doubles as the titlebar
+    // (manual drag + custom min/max/close controls), matching toqe and
+    // plaza. DWM keeps the native Win11 rounded corners + shadow since
+    // we don't touch `transparent`/`shadow`. macOS keeps its native
+    // titlebar + traffic lights — the frontend hides its window
+    // controls there.
+    #[cfg(windows)]
+    {
+        b = b.decorations(false);
+    }
     if let Some((x, y)) = position_near_cursor(app, pw, ph) {
         b = b.position(x, y);
     }
