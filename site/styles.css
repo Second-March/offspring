@@ -16,8 +16,11 @@
   --line-soft: #2420180d;
   --line-strong: #24201830;
   --bg2: #efece4;
-  --accent: #1a1814;
-  --accent-ink: #f9f8f3;
+  /* Offspring's brand blue (the app-icon glass) — used for the
+     download CTAs. Same value in both themes; white ink on top. */
+  --accent: #2196f3;
+  --accent-hover: #1976d2;
+  --accent-ink: #ffffff;
   --tint: #efece4;
   --tint-2: #e9e5da;
   --yes: #0d8c7f;
@@ -41,8 +44,9 @@
   --line-soft: #eceef20e;
   --line-strong: #eceef238;
   --bg2: #24262c;
-  --accent: #f1f2f5;
-  --accent-ink: #0c0c0e;
+  --accent: #2196f3;
+  --accent-hover: #47a9f5;
+  --accent-ink: #ffffff;
   --tint: #282a31;
   --tint-2: #2f3138;
   --yes: #12a06d;
@@ -137,18 +141,18 @@ h3 {
   border-radius: 6px;
 }
 
-/* The app icon as the hero's opening mark. Radius ≈22% of size matches
-   how the mark renders in the app titlebar; the soft shadow lifts it
-   off the cream/onyx canvas without a border. */
+/* The app icon as the hero's opening mark. The PNG carries its own
+   rounded-corner shape in its alpha channel, so no CSS border-radius —
+   a mismatched CSS radius left canvas-colored corner slivers showing
+   through — and drop-shadow (which follows the alpha) instead of
+   box-shadow (which draws a rectangle). */
 .ld-hero-icon {
   display: block;
   width: 112px;
   height: 112px;
   margin: 0 auto 28px;
-  border-radius: 25px;
-  box-shadow:
-    0 2px 6px rgba(0, 0, 0, 0.1),
-    0 14px 38px rgba(0, 0, 0, 0.14);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.1))
+    drop-shadow(0 14px 30px rgba(0, 0, 0, 0.14));
 }
 
 .ld-nav {
@@ -177,12 +181,15 @@ h3 {
   font-weight: 500;
   padding: 7px 14px;
   border-radius: 999px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
   transition: background var(--duration-fast), border-color var(--duration-fast);
 }
 
 .ld-top-demo:hover {
-  background: var(--tint);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .ld-theme {
@@ -202,12 +209,28 @@ h3 {
   background: var(--tint);
 }
 
-.ld-theme-dot {
-  width: 13px;
-  height: 13px;
-  border-radius: 999px;
-  border: 1.6px solid var(--text);
-  background: linear-gradient(to right, var(--text) 50%, transparent 50%);
+/* Sun / moon NeatIcons in the theme toggle — sun in light, moon in
+   dark, matching toqe. Both are always in the DOM; CSS picks one. */
+.ld-theme svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.ld-theme:hover svg {
+  color: var(--ink);
+}
+
+.ld-theme-moon {
+  display: none;
+}
+
+.theme-dark .ld-theme-sun {
+  display: none;
+}
+
+.theme-dark .ld-theme-moon {
+  display: block;
 }
 
 /* ---- shared section rhythm ------------------------------------------- */
@@ -327,7 +350,8 @@ h3 {
 }
 
 .ld-btn.primary:hover {
-  background: color-mix(in srgb, var(--accent) 88%, var(--canvas));
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 /* ---- screenshots ----------------------------------------------------- */
