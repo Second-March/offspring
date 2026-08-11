@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import FormatFields from "$lib/components/FormatFields.svelte";
   import Neaticon from "$lib/components/Neaticon.svelte";
@@ -301,11 +300,16 @@
       return;
     }
     if (upd.phase === "error" || !update.installer_url) {
-      // Download failed or there's no .exe asset — open the release page
-      // so the user can grab it manually.
+      // Download failed or there's no installer asset — open the release
+      // page so the user can grab it manually. Via the Rust shell-open
+      // command, NOT plugin-opener's openUrl: the JS path fails silently
+      // in packaged builds (seen on both WebView2 and macOS), which left
+      // this button dead exactly when the user needed the fallback.
       try {
-        await openUrl(update.installer_url || update.html_url);
-      } catch {}
+        await api.openExternalUrl(update.installer_url || update.html_url);
+      } catch (err) {
+        saveError = String(err);
+      }
       return;
     }
     // "idle" or still "downloading" — if we haven't kicked off yet, do so
