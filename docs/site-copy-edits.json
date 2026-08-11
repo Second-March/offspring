@@ -1,9 +1,8 @@
 [
   {
-    "after": "Compared to other tools",
-    "at": "2026-08-11T13:51:20.155Z",
-    "before": "Compared",
-    "ctx": "Compared Next to how you're doing it now HandBrake is genuinely good and FFmpeg is what Offspring runs on — neither is the enemy. The difference is how much ceremony stands between you and one converted file. Offspring Web converter HandBrake ffmpeg by hand Convert without opening an app ✓ — — a terminal Output lands next to the input ✓ via Downloads you pick a path you type a path Nothing leaves your machine ✓ — ✓ ✓ Whole selection in one go ✓ upload each queue write a loop Your settings, remembered presets — presets shell history File-size ceiling none usually capped none none Target a max output size per preset sometimes by bitrate maths by bitrate maths Cost Free · MIT free tier, then upsell Free · GPL Free · LGPL",
+    "after": "The same menu carries the small edits you'd otherwise open an editor for. Each one works on your selected files.",
+    "at": "2026-08-11T13:52:47.009Z",
+    "before": "The same menu carries the small edits you'd otherwise open an editor for. Each one works on your whole selection.",
     "kind": "text",
     "source": null
   }
