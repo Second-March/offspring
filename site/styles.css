@@ -233,67 +233,6 @@ h3 {
   display: block;
 }
 
-/* ---- download popover ------------------------------------------------- */
-/* Two-choice Windows / macOS card opened by the download CTAs. Absolute
-   against the document (JS sets top/left under the clicked button). */
-.ld-dl-menu {
-  position: absolute;
-  z-index: 60;
-  min-width: 280px;
-  padding: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--card);
-  border: 1px solid var(--line-strong);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
-  animation: ld-dl-pop 0.16s var(--ease-smooth-out);
-}
-
-@keyframes ld-dl-pop {
-  from {
-    opacity: 0;
-    transform: translateY(-3px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.ld-dl-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
-  border-radius: 9px;
-  text-decoration: none;
-  transition: background var(--duration-fast);
-}
-
-.ld-dl-item:hover {
-  background: var(--tint);
-}
-
-.ld-dl-os {
-  font-size: 14.5px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.ld-dl-os em {
-  font-style: normal;
-  font-weight: 500;
-  color: var(--accent);
-}
-
-.ld-dl-file {
-  font-size: 12.5px;
-  color: var(--muted);
-  font-family: 'Geist Mono', ui-monospace, monospace;
-}
-
 /* ---- shared section rhythm ------------------------------------------- */
 
 .ld-main {
