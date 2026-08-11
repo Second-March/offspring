@@ -364,9 +364,12 @@ h3 {
    either side). These are real screenshots at modest pixel sizes — letting
    them stretch to the 1080px column blew contextmenu.webp up 1.7x and it
    went visibly soft. Crisp and smaller beats big and mushy. */
+/* Screenshots are 2x captures displayed at half their pixel size, so
+   they stay crisp on both standard and retina displays. Each figure's
+   max-width = the shot's intended display width + the 10px padding. */
 .ld-shot {
   margin: 0 auto;
-  max-width: 660px;
+  max-width: 900px;
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 14px;
