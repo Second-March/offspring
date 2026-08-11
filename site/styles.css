@@ -137,6 +137,20 @@ h3 {
   border-radius: 6px;
 }
 
+/* The app icon as the hero's opening mark. Radius ≈22% of size matches
+   how the mark renders in the app titlebar; the soft shadow lifts it
+   off the cream/onyx canvas without a border. */
+.ld-hero-icon {
+  display: block;
+  width: 112px;
+  height: 112px;
+  margin: 0 auto 28px;
+  border-radius: 25px;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.1),
+    0 14px 38px rgba(0, 0, 0, 0.14);
+}
+
 .ld-nav {
   display: flex;
   align-items: center;
@@ -378,6 +392,17 @@ h3 {
 .ld-tile h3 {
   font-size: 17px;
   margin-bottom: 7px;
+}
+
+/* NeatIcons glyph atop each tool tile — the same set the app itself
+   uses, inlined so the page stays dependency-free. currentColor via
+   the muted text tone, so it flips with the theme. */
+.ld-tile-icon {
+  display: block;
+  width: 22px;
+  height: 22px;
+  color: var(--muted);
+  margin-bottom: 12px;
 }
 
 .ld-tile p {

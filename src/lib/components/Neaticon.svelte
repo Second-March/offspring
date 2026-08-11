@@ -17,8 +17,9 @@
       .replace(/^[\s\S]*?<svg[^>]*>/, "")
       .replace(/<\/svg>\s*$/, "")
       // The library's baked-in navy → currentColor so icons inherit text
-      // color and flip with themes for free.
-      .replaceAll("#13193a", "currentColor")
+      // color and flip with themes for free. Case-insensitive: the
+      // library mixes #13193a and #13193A across files.
+      .replace(/#13193a/gi, "currentColor")
       // Duplicate glyphs on one page would collide on baked-in ids.
       .replace(/\s+id="[^"]*"/g, "");
   }
