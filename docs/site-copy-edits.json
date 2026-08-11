@@ -13,5 +13,223 @@
     "ctx": "Tools And the jobs that aren't conversions The same menu carries the small edits you'd otherwise open an editor for. Each one works on your selected files.",
     "kind": "text",
     "source": null
+  },
+  {
+    "after": "Free + open source · Windows 11 and macOS",
+    "at": "2026-08-11T13:58:13.410Z",
+    "before": "Free & open source · Windows 11 and macOS",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "MIT-licensed · no account, no data sharing, no pricing · v0.5.3",
+    "at": "2026-08-11T14:02:11.016Z",
+    "before": "MIT-licensed · no account, no telemetry, no uploads · v0.5.3",
+    "frags": [
+      {
+        "after": "MIT-licensed · no account, no data sharing, no pricing ·",
+        "before": "MIT-licensed · no account, no telemetry, no uploads ·"
+      }
+    ],
+    "kind": "rich",
+    "source": null
+  },
+  {
+    "after": "It's this simple. Your presets sit one click inside the right-click menu that was already under your cursor.",
+    "at": "2026-08-11T14:02:29.443Z",
+    "before": "The whole app, most days. Your presets sit one click inside the menu that was already under your cursor.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "The problem",
+    "at": "2026-08-11T14:04:29.240Z",
+    "before": "The point",
+    "ctx": "The point Ninety seconds, gone, every single time The old way has a shape: find a converter, wait for the page, upload 40 MB, wait again, download to Downloads, drag it back to the folder it came from, delete the one with (1) in the name. Or open a whole application, set up a queue, pick a destination, remember what preset you used last time. Offspring replaces all of that with two clicks and no waiting on anyone's server. The output lands next to the input, named after it. Do it four times a week and you've bought back an afternoon a year — which is a small thing, except it's the small thing that used to make you not bother.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Every tool has its use",
+    "at": "2026-08-11T14:05:07.356Z",
+    "before": "Ninety seconds, gone, every single time",
+    "ctx": "The problem Ninety seconds, gone, every single time The old way has a shape: find a converter, wait for the page, upload 40 MB, wait again, download to Downloads, drag it back to the folder it came from, delete the one with (1) in the name. Or open a whole application, set up a queue, pick a destination, remember what preset you used last time. Offspring replaces all of that with two clicks and no waiting on anyone's server. The output lands next to the input, named after it. Do it four times a week and you've bought back an afternoon a year — which is a small thing, except it's the small thing that used to make you not bother.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Offspring replaces all of that with two clicks and no waiting on anyone's server. The\noutput lands next to the input, named after it. Do it four times a week and you've\nbought back an afternoon a year — which is a small thing, except it's the small thing\nthat used to make you not bother.",
+    "at": "2026-08-11T14:11:38.151Z",
+    "before": "Offspring replaces all of that with two clicks and no waiting on anyone's server. The output lands next to the input, named after it. Do it four times a week and you've bought back an afternoon a year — which is a small thing, except it's the small thing that used to make you not bother.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "at": "2026-08-11T14:11:39.827Z",
+    "kind": "remove",
+    "sig": {
+      "cls": "ld-sub",
+      "idx": 3,
+      "pcls": "ld-exhibit",
+      "ptag": "SECTION",
+      "tag": "P",
+      "txt": "Offspring replaces all of that with two clicks and no waitin"
+    },
+    "sigKey": "P.ld-sub<SECTION.ld-exhibit#3|Offspring replaces all of that with two clicks and no waitin",
+    "source": null,
+    "text": "Offspring replaces all of that with two clicks and no waiting on anyon",
+    "what": "p.ld-sub"
+  },
+  {
+    "after": "Day to day, I face a huge amount of media files: things to share, review for work, or that I send my friends on different platforms. Until now, every minor edit to a video like a speed-up or a crop would require a round-trip through a full suite app like After Effects, or Davinci. Or I guess you could upload it to one of those dodgy websites with terrible limits and ads all over. Offspring replaces all of that with a right-click menu and instant speed. Plus, it incorporate a lot of other tools that are not just a means to save you time but can genuinely improve your productivity and make things incredibly seamless.",
+    "at": "2026-08-11T14:27:05.898Z",
+    "before": "The old way has a shape: find a converter, wait for the page, upload 40 MB, wait again, download to Downloads, drag it back to the folder it came from, delete the one with (1) in the name. Or open a whole application, set up a queue, pick a destination, remember what preset you used last time.",
+    "kind": "rich",
+    "source": null
+  },
+  {
+    "after": "Day to day, I face a huge amount of media files: things to share, review for work, or that I send my friends on different platforms. Until now, every minor edit to a video like a speed-up or a crop would require a round-trip through a full suite app like After Effects, or Davinci. Or I guess you could upload it to one of those dodgy websites with terrible limits and ads all over.\nOffspring replaces all of that with a right-click menu and instant speed. Plus, it incorporate a lot of other tools that are not just a means to save you time but can genuinely improve your productivity and make things incredibly seamless.",
+    "at": "2026-08-11T14:27:11.837Z",
+    "before": "Day to day, I face a huge amount of media files: things to share, review for work, or that I send my friends on different platforms. Until now, every minor edit to a video like a speed-up or a crop would require a round-trip through a full suite app like After Effects, or Davinci. Or I guess you could upload it to one of those dodgy websites with terrible limits and ads all over. Offspring replaces all of that with a right-click menu and instant speed. Plus, it incorporate a lot of other tools that are not just a means to save you time but can genuinely improve your productivity and make things incredibly seamless.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "No dock icon, no project to save, nothing to close. A compact always-on top window counts through your selection files by file and closes itself when it's finished.",
+    "at": "2026-08-11T14:29:19.507Z",
+    "before": "No dock icon, no project to save, nothing to close. A compact always-on-top window counts through your selection file by file and dismisses itself when it's finished. Select twelve clips and it works through all twelve — the shell hands the whole selection over in one go.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Conversions and edits happen in a blink",
+    "at": "2026-08-11T14:28:08.938Z",
+    "before": "One small window, then it's gone",
+    "ctx": "Encoding · Progress One small window, then it's gone No dock icon, no project to save, nothing to close. A compact always-on-top window counts through your selection file by file and dismisses itself when it's finished. Select twelve clips and it works through all twelve — the shell hands the whole selection over in one go.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Create custom presets",
+    "at": "2026-08-11T14:30:12.747Z",
+    "before": "The presets are yours to shape",
+    "ctx": "Presets · Yours The presets are yours to shape It ships with the ones you'd have made anyway — a Discord-ready GIF, a compressed MP4, a cropped 9:16 vertical, a 1080p downscale. Edit them, reorder them, add your own. Each preset carries its own crop, target file size, palette and dither, so \"the one that fits under 10 MB\" is a preset and not a thing you re-derive every time.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "By default, offspring comes with a variety of useful presets. But its true power lies in allowing you to create custom presets for exactly what you need: Discord ready GIF, a compressed MP4, cropped 9:16 vertical videos, a 1080p downscale... Edit them, reorder them, and add your own.",
+    "at": "2026-08-11T14:32:42.381Z",
+    "before": "It ships with the ones you'd have made anyway — a Discord-ready GIF, a compressed MP4, a cropped 9:16 vertical, a 1080p downscale. Edit them, reorder them, add your own. Each preset carries its own crop, target file size, palette and dither, so \"the one that fits under 10 MB\" is a preset and not a thing you re-derive every time.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Crop, rotate, flip, reverse, drop the audio or speed up videos, all with a scrubbable preview of the actual file.",
+    "at": "2026-08-11T14:33:11.517Z",
+    "before": "Crop, rotate, flip, reverse, drop the audio — with a scrubbable preview of the actual file.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Concatenate a selection into one file, in filename order, settings inherited from the first. Extremely useful for quick edits of multiple shots.",
+    "at": "2026-08-11T14:33:32.115Z",
+    "before": "Concatenate a selection into one file, in filename order, settings inherited from the first.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Burn in filename, timecode or your own text per corner, with optional guides and a watermark to check for all aspect ratios.",
+    "at": "2026-08-11T14:33:43.837Z",
+    "before": "Burn in filename, timecode or your own text per corner, with optional guides and a watermark.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Desaturate anything, or invert an image to a negative handy for cleaning up masks or sending quick previews with no color.",
+    "at": "2026-08-11T14:33:59.735Z",
+    "before": "Desaturate anything, or invert an image to a negative — handy for cleaning up masks.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Pad the shorter edge to a square, transparent or matched to the corner pixel. Especially useful for textures that will deform if they're not 1:1 ratio.",
+    "at": "2026-08-11T14:34:24.239Z",
+    "before": "Pad the shorter edge to a square, transparent or matched to the corner pixel.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Right-click one numbered frame and Offspring finds the rest of the sequence for you. Export as a video or directly as a GIF.",
+    "at": "2026-08-11T14:34:32.339Z",
+    "before": "Right-click one numbered frame and Offspring finds the rest of the sequence for you.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Need a one-off that isn't worth a preset? Tweak the settings for just this run. A window will pop up where you can customize the output settings directly.",
+    "at": "2026-08-11T14:34:55.754Z",
+    "before": "Need a one-off that isn't worth a preset? Tweak the settings for just this run.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "at": "2026-08-11T14:35:09.293Z",
+    "kind": "remove",
+    "sig": {
+      "cls": "ld-compare-sec.ld-exhibit",
+      "idx": 7,
+      "pcls": "ld-main",
+      "ptag": "MAIN",
+      "tag": "SECTION",
+      "txt": "Compared Next to how you're doing it now HandBrake is genuin"
+    },
+    "sigKey": "SECTION.ld-compare-sec.ld-exhibit<MAIN.ld-main#7|Compared Next to how you're doing it now HandBrake is genuin",
+    "source": null,
+    "text": "Compared Next to how you're doing it now HandBrake is genuinely good a",
+    "what": "section.ld-exhibit.ld-compare-sec"
+  },
+  {
+    "after": "Download, install, and go!",
+    "at": "2026-08-11T14:35:59.456Z",
+    "before": "Two minutes, and one of them is the download",
+    "ctx": "Install Two minutes, and one of them is the download Grab the installer from the releases page. Every build is signed offline with a minisign key whose public half is pinned inside the app. Windows 11 Download Offspring-Setup-<version>.exe and run it. It installs for you alone — no admin prompt, no UAC — and the right-click entries appear straight away. Right-click any video or image. You're done. Windows may show a SmartScreen notice — there's no paid Authenticode certificate behind this. More info → Run anyway. Optionally turn on the Windows 11 top-level menu (no \"Show more options\") from Settings. macOS Download the .dmg and drag Offspring to Applications. Launch it once. It's signed and notarized, so Gatekeeper lets it through. Turn the Finder integration on: System Settings → Keyboard → Keyboard Shortcuts → Services → Files and Folders and tick Offspring… That third step is macOS being macOS — it hides newly-installed services by default. After it, Offspring lives in Finder's right-click → Services menu. On first launch Offspring fetches a small FFmpeg build into its own folder if you don't already have one — or point it at the FFmpeg you've got (/opt/homebrew/bin/ffmpeg, say) in Settings.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "Installing the app is very easy. Just download it for your OS and you're pretty much ready to go! In order to Offspring to work as intended an live in your right click menu, there are a couple of extra steps you might need to take depending on your OS:",
+    "at": "2026-08-11T14:36:49.081Z",
+    "before": "Grab the installer from the releases page. Every build is signed offline with a minisign key whose public half is pinned inside the app.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "It installs for your user alone — no admin prompt, no UAC — and the right-click entries\nappear straight away.",
+    "at": "2026-08-11T14:37:19.275Z",
+    "before": "It installs for you alone — no admin prompt, no UAC — and the right-click entries appear straight away.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "That third step is macOS being macOS — it hides newly-installed services by default.\nAfter it, Offspring lives in Finder's right-click → Services menu.",
+    "at": "2026-08-11T14:37:32.955Z",
+    "before": "That third step is macOS being macOS — it hides newly-installed services by default. After it, Offspring lives in Finder's right-click → Services menu.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "No. If there isn't one on your machine, Offspring offers to download a build into\nits own per-user folder — about 80 MB on Windows, a universal static build on\nmacOS — and verifies its SHA-256 before unpacking it. If you already have FFmpeg,\npoint Settings at it and nothing gets downloaded at all.",
+    "at": "2026-08-11T14:37:33.751Z",
+    "before": "No. If there isn't one on your machine, Offspring offers to download a build into its own per-user folder — about 80 MB on Windows, a universal static build on macOS — and verifies its SHA-256 before unpacking it. If you already have FFmpeg, point Settings at it and nothing gets downloaded at all.",
+    "kind": "text",
+    "source": null
+  },
+  {
+    "after": "No. There's no analytics, no telemetry, and the app makes zero outbound requests\non its own. It's a double-edged sword, because it means that I don't get information when/if your app crashes or misbehaves, but I wanted Offspring to be as non-intrusive as possible. The only three network calls that exist are ones you click: the\nFFmpeg download, an update check, and the update download that follows it. Your\nfiles are only ever read from and written to the folder they live in.",
+    "at": "2026-08-11T14:39:38.623Z",
+    "before": "No. There's no analytics, no telemetry, and the app makes zero outbound requests on its own. The only three network calls that exist are ones you click: the FFmpeg download, an update check, and the update download that follows it. Your files are only ever read from and written to the folder they live in.",
+    "kind": "text",
+    "source": null
   }
 ]
