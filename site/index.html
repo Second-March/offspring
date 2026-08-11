@@ -10,6 +10,7 @@
     />
     <meta name="robots" content="index,follow" />
     <meta name="application-name" content="Offspring" />
+    <link rel="canonical" href="https://offspring.secondmarch.xyz/" />
     <meta name="theme-color" content="#f9f8f3" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0c0c0e" media="(prefers-color-scheme: dark)" />
     <link rel="author" href="https://secondmarch.xyz/" />
@@ -22,13 +23,78 @@
       content="Drop a .mov on a right-click preset, get a Discord-ready GIF in the same folder. No app to open, no upload, no command line."
     />
     <meta property="og:url" content="https://offspring.secondmarch.xyz/" />
-    <meta property="og:image" content="https://offspring.secondmarch.xyz/og-image.jpg" />
-    <meta property="og:image:width" content="512" />
-    <meta property="og:image:height" content="512" />
-    <meta name="twitter:card" content="summary" />
-    <meta name="twitter:image" content="https://offspring.secondmarch.xyz/og-image.jpg" />
+    <meta property="og:image" content="https://offspring.secondmarch.xyz/og-banner.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Offspring — Right-click, convert, done" />
+    <meta
+      name="twitter:description"
+      content="Drop a .mov on a right-click preset, get a Discord-ready GIF in the same folder. No app to open, no upload, no command line."
+    />
+    <meta name="twitter:image" content="https://offspring.secondmarch.xyz/og-banner.jpg" />
 
     <link rel="icon" type="image/png" href="/icon.png" />
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Offspring",
+      "operatingSystem": "Windows 11, macOS",
+      "applicationCategory": "MultimediaApplication",
+      "description": "Video and image conversion presets in your right-click menu, powered by FFmpeg. Convert MOV to MP4, video to GIF, resize and compress images — free, open source, and nothing ever leaves your machine.",
+      "url": "https://offspring.secondmarch.xyz/",
+      "downloadUrl": "https://github.com/second-march/offspring/releases/latest",
+      "image": "https://offspring.secondmarch.xyz/og-banner.jpg",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "license": "https://github.com/second-march/offspring/blob/main/LICENSE",
+      "author": { "@type": "Organization", "name": "Second March", "url": "https://secondmarch.xyz/" }
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Do I need to install FFmpeg myself?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. If there isn't one on your machine, Offspring offers to download a build into its own per-user folder — about 80 MB on Windows, a universal static build on macOS — and verifies its SHA-256 before unpacking it. If you already have FFmpeg, point Settings at it and nothing gets downloaded at all." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does anything get uploaded?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. There's no analytics, no telemetry, and the app makes zero outbound requests on its own. The only three network calls that exist are ones you click: the FFmpeg download, an update check, and the update download that follows it. Your files are only ever read from and written to the folder they live in." }
+        },
+        {
+          "@type": "Question",
+          "name": "Where does the converted file go?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Right next to the original, with a suffix from the preset — so clip.mov becomes clip_discord.gif in the same folder. Nothing is overwritten unless you explicitly ask the Modify tool to." }
+        },
+        {
+          "@type": "Question",
+          "name": "Can I convert several files at once?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes — select as many as you like and pick a preset once. The progress window walks the list. Merge and Compare are the tools that treat the selection as a group rather than one-by-one." }
+        },
+        {
+          "@type": "Question",
+          "name": "What formats does it handle?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Whatever FFmpeg reads, which is nearly everything — including ProRes, DNxHD and awkward MKVs. Output is MP4, GIF, or a still image as PNG, JPEG, WebP or AVIF." }
+        },
+        {
+          "@type": "Question",
+          "name": "What's the Studio build on the releases page?",
+          "acceptedAnswer": { "@type": "Answer", "text": "The same app with every outbound code path compiled out — no FFmpeg downloader, no update check, no certificate handling. For locked-down machines where an app that could reach the network is the problem. You supply FFmpeg yourself." }
+        },
+        {
+          "@type": "Question",
+          "name": "Is FFmpeg bundled into it?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No — Offspring calls FFmpeg as a separate executable and never links against it, so FFmpeg's LGPL doesn't propagate. FFmpeg is © the FFmpeg developers under LGPL v2.1+; Offspring itself is MIT." }
+        }
+      ]
+    }
+    </script>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
