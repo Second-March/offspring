@@ -27,7 +27,7 @@ receives security fixes. Local-iteration builds (versions ending in
 
 ## Scope
 
-The full threat model lives in [THREAT_MODEL.md](./THREAT_MODEL.md), but
+The full threat model lives in [THREAT_MODEL.md](../docs/THREAT_MODEL.md), but
 in short:
 
 **In scope** — issues I'll prioritise fixing:
@@ -171,5 +171,5 @@ proceeding with the per-user install.
 - Single-instance IPC uses a Win32 named pipe with
   `PIPE_REJECT_REMOTE_CLIENTS` (no network reachability).
 
-See [THREAT_MODEL.md](./THREAT_MODEL.md) for the full picture and
-[RELEASING.md](./RELEASING.md) for the signing workflow.
+See [THREAT_MODEL.md](../docs/THREAT_MODEL.md) for the full picture and
+[RELEASING.md](../docs/RELEASING.md) for the signing workflow.

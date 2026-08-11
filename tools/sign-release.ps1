@@ -20,7 +20,7 @@
 # The private key lives at `installer\.minisign\offspring.key` by
 # default (gitignored). Override with `-KeyPath` if you keep it
 # elsewhere — e.g. on a removable drive that you mount only when
-# signing. See `RELEASING.md` for the full flow.
+# signing. See `docs/RELEASING.md` for the full flow.
 #
 # Verification (do this every time before publishing):
 #
@@ -153,7 +153,7 @@ Generate one with:
 
 Then paste the public-key file's second line into
 src-tauri/src/updates.rs:UPDATE_MINISIGN_PUBKEY and back the private
-key up offline. See RELEASING.md for details.
+key up offline. See docs/RELEASING.md for details.
 "@
 }
 

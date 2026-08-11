@@ -11,7 +11,7 @@ body:
 
         **Heads up:** if it's a security issue, please email
         [dev@secondmarch.xyz](mailto:dev@secondmarch.xyz) instead of
-        filing here — see [SECURITY.md](https://github.com/second-march/offspring/blob/main/SECURITY.md).
+        filing here — see [SECURITY.md](https://github.com/second-march/offspring/blob/main/.github/SECURITY.md).
 
   - type: input
     id: version

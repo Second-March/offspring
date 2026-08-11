@@ -160,7 +160,7 @@ git push origin v0.5.2
 
 The commit will include all the version-file bumps the bumper made. The
 tag format is `vX.Y.Z` — the in-app updater's tag filter
-(`is_plausible_tag` in [updates.rs](src-tauri/src/updates.rs)) expects
+(`is_plausible_tag` in [updates.rs](../src-tauri/src/updates.rs)) expects
 that exact shape. Use **annotated** tags (`-a`), never lightweight ones.
 
 Pushing the tag is what starts the release build. A push to `main`
@@ -169,7 +169,7 @@ artifacts, but creates no release — useful for a dry run.
 
 ### 3. Let CI build and sign
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) runs
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) runs
 three jobs:
 
 1. **Windows** — `build-release.ps1 -NoBump -SkipInstall` produces both

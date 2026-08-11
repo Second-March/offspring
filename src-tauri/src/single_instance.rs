@@ -50,7 +50,7 @@
 //!     through the pipe at all. We deliberately don't try to defend
 //!     this surface because doing so would be theatre.
 //!
-//! See also `THREAT_MODEL.md` in the repo root.
+//! See also `docs/THREAT_MODEL.md`.
 //!
 //! We use raw FFI instead of the `windows` crate to keep the dep
 //! footprint small and avoid the feature-gating maze that crate's

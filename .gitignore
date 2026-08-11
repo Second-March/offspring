@@ -44,7 +44,7 @@ vite.config.ts.timestamp-*
 /DESIGN.md
 /.claude/
 /examples/
-/OPERATIONS.md
+OPERATIONS.md
 
 # Minisign signing material. The private key must never enter the repo
 # under any circumstances — losing it would let an attacker impersonate

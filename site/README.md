@@ -70,7 +70,7 @@ im.resize((640,round(im.height*640/im.width)),Image.LANCZOS).save('shots/main.we
 Every claim on the page traces to something real in this repo — the
 tool list to `context_menu.rs`, the FFmpeg download and SHA-256 check
 to `bootstrap.rs`, the "zero outbound requests on its own" line to
-[SECURITY.md](../SECURITY.md), the macOS Services steps to the
+[SECURITY.md](../.github/SECURITY.md), the macOS Services steps to the
 `NSServices` entry in `src-tauri/Info.plist`. The version in the hero's
 fine print (`v0.5.1`) is the one place that needs a manual bump at
 release time; the download buttons point at `/releases/latest` so they
