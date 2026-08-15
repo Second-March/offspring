@@ -1651,10 +1651,14 @@ pub fn cleanup_partial_output(out: &Path) {
 /// responsive to the ✕ button and surfacing stderr on failure.
 ///
 /// The blocking `Command::status()` this replaces had two problems: the
-/// user's cancel was ignored for the entire run (the GIF palette pass
-/// runs the full filter chain, so with `reverse` or `minterpolate` in
-/// play that is not a quick pass), and stderr went to `Stdio::null()`,
+/// user's cancel was ignored for the entire run (the Trim tool's palette
+/// pass runs its full filter chain over every kept frame, which is not a
+/// quick pass on long selections), and stderr went to `Stdio::null()`,
 /// leaving a bare "palette pass failed" with nothing to act on.
+///
+/// The main GIF palette pass no longer comes through here — it reports
+/// live progress via a `metadata=print` probe branch, so it runs through
+/// `run_with_progress` like the encode pass.
 ///
 /// The caller must have set `stderr(Stdio::piped())` for the diagnostic
 /// half to do anything; a drain thread keeps the pipe from filling up
@@ -1709,6 +1713,24 @@ fn run_quiet_cancellable(mut cmd: Command, what: &str) -> Result<()> {
         bail!("{what} failed\n--- last stderr lines ---\n{summary}");
     }
     Ok(())
+}
+
+/// Seconds of source consumed, parsed from one line of an ffmpeg stdout
+/// stream. Two producers feed this. `-progress pipe:1` blocks emit
+/// `out_time_ms=` (which, despite the name, is MICROseconds) — that's
+/// every encode pass. The GIF palette pass instead streams
+/// `metadata=print` frame lines ("frame:119  pts:119  pts_time:59.5"),
+/// because palettegen can't drive `-progress`; see the pass-1 comment
+/// in `encode_gif_once`. Anything else is progress-block noise or log
+/// output and parses to `None`.
+fn parse_progress_seconds(line: &str) -> Option<f64> {
+    if let Some(rest) = line.strip_prefix("out_time_ms=") {
+        rest.trim().parse::<i64>().ok().map(|us| us as f64 / 1_000_000.0)
+    } else if let Some(rest) = line.strip_prefix("frame:") {
+        rest.split("pts_time:").nth(1).and_then(|t| t.trim().parse::<f64>().ok())
+    } else {
+        None
+    }
 }
 
 fn run_with_progress(
@@ -1799,19 +1821,16 @@ fn run_with_progress(
         match rx.recv_timeout(FFMPEG_POLL_INTERVAL) {
             Ok(line) => {
                 last_progress = Instant::now();
-                if let Some(rest) = line.strip_prefix("out_time_ms=") {
-                    if let (Ok(us), Some(total)) = (rest.trim().parse::<i64>(), duration_s) {
-                        let s = us as f64 / 1_000_000.0;
-                        let pct = (s / total).clamp(0.0, 1.0) as f32;
-                        on_progress(ProgressEvent {
-                            file_index,
-                            total_files,
-                            input: input_display.to_string(),
-                            stage: stage.into(),
-                            percent: Some(pct),
-                            message: None,
-                        });
-                    }
+                if let (Some(s), Some(total)) = (parse_progress_seconds(&line), duration_s) {
+                    let pct = (s / total).clamp(0.0, 1.0) as f32;
+                    on_progress(ProgressEvent {
+                        file_index,
+                        total_files,
+                        input: input_display.to_string(),
+                        stage: stage.into(),
+                        percent: Some(pct),
+                        message: None,
+                    });
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -2017,6 +2036,20 @@ fn run_with_progress_cleanup(
     }
 }
 
+/// Sampling rate for the GIF palette pass, or `None` to feed palettegen
+/// every frame. Aims ~120 frames spread evenly across the clip, clamped
+/// to 2–8 fps. `None` when the duration is unknown (can't size the
+/// rate) or when the preset's own fps is already at or below the sample
+/// rate — `fps=` with a rate HIGHER than its input duplicates frames,
+/// which would make the pass slower, not faster.
+fn palette_sample_fps(duration_s: Option<f64>, preset_fps: Option<u32>) -> Option<f64> {
+    const PALETTE_SAMPLE_FRAMES: f64 = 120.0;
+    duration_s
+        .filter(|d| *d > 0.0)
+        .map(|d| (PALETTE_SAMPLE_FRAMES / d).clamp(2.0, 8.0))
+        .filter(|s| preset_fps.map_or(true, |pf| f64::from(pf) > *s))
+}
+
 /// One GIF encode pass (palettegen + paletteuse). `width_override` lets the
 /// caller shrink the output between iterations when hitting a size target.
 #[allow(clippy::too_many_arguments)]
@@ -2069,13 +2102,58 @@ fn encode_gif_once(
             .unwrap_or_else(|_| std::env::temp_dir())
             .join(format!("{stem}.{}.{nonce}.palette.png", std::process::id()))
     };
-    let mut filter_p1 = filter.clone();
-    if !filter_p1.is_empty() {
-        filter_p1.push(',');
+    // Frame sampling for palettegen. `stats_mode=full` histograms every
+    // frame it is fed, which made long clips sit on "Generating palette"
+    // for as long as the encode itself. A palette built from ~120 frames
+    // spread evenly across the clip is visually indistinguishable from
+    // one built from every frame for real-world footage, so decimate the
+    // stream ahead of palettegen once the clip is long enough for the
+    // decimation to drop anything. (Measured on the bundled n8.1.2: a
+    // 60s 1080p clip's palette pass went from 37s to 4.5s.)
+    //
+    // The sample rate goes AFTER the shared chain, not in front of it:
+    // the Modify speed path ends the chain with its own `fps=` /
+    // `minterpolate` retime, and a decimation ahead of that would be
+    // undone (or interpolated back up, at real cost) by it. Appending
+    // keeps every sampled frame identical to a frame the encode pass
+    // will actually produce.
+    let sample_fps = palette_sample_fps(duration_s, preset.fps);
+
+    let mut scan = filter.clone();
+    if let Some(s) = sample_fps {
+        if !scan.is_empty() {
+            scan.push(',');
+        }
+        scan.push_str(&format!("fps={s:.3}"));
     }
-    filter_p1.push_str(&format!(
-        "palettegen=max_colors={palette_colors}:stats_mode=full"
-    ));
+
+    // Live progress for the palette pass. `palettegen` buffers its whole
+    // input and emits a single frame at EOF, so on its own the pass has
+    // no advancing `out_time` for `-progress` to report — which is why
+    // this stage used to show no percentage and looked hung on long
+    // clips. `-progress` can't be rescued with a second output either:
+    // ffmpeg 8 reports the LEAST-advanced output stream (palettegen's,
+    // pinned at ~0 by design) and all but stops emitting periodic blocks
+    // while the image2 output waits for its only frame — both verified
+    // against the bundled n8.1.2.
+    //
+    // Instead, split the sampled stream and run the twin branch through
+    // `metadata=print`, which writes a "frame:N pts:… pts_time:T" line
+    // to stdout for every frame scanned; `run_with_progress` turns
+    // `pts_time` into the same live percent the encode pass gets from
+    // `out_time_ms`. The `metadata=add` in front is load-bearing: print
+    // mode only reports frames carrying at least one metadata entry, and
+    // decoded frames often carry none. `direct=1` defeats write
+    // buffering so the lines arrive while the scan runs, not after. The
+    // quotes around `pipe\:1` are the filtergraph-level escaping for the
+    // colon; `\\:` without quotes fails to parse.
+    let filter_p1 = format!(
+        "[0:v]{scan}{sep}split[pal_in][probe];\
+         [pal_in]palettegen=max_colors={palette_colors}:stats_mode=full[pal];\
+         [probe]metadata=mode=add:key=offspring.scan:value=1,\
+         metadata=mode=print:file='pipe\\:1':direct=1[probe_out]",
+        sep = if scan.is_empty() { "" } else { "," },
+    );
 
     on_progress(ProgressEvent {
         file_index,
@@ -2090,6 +2168,10 @@ fn encode_gif_once(
         ),
     });
 
+    // Deliberately NO `-progress pipe:1` here: the metadata-print branch
+    // above owns stdout, and its absence keeps run_with_progress's stall
+    // watchdog disarmed — correct for chains like `reverse` that buffer
+    // every frame and go quiet far longer than the watchdog allows.
     let mut palette_cmd = Command::new(ffmpeg);
     palette_cmd.args(["-v", verbosity, "-y"]);
     // Modify-tool trim. See the MP4 branch in encode_file for the
@@ -2108,16 +2190,16 @@ fn encode_gif_once(
         palette_cmd.arg(a);
     }
     palette_cmd
-        .args(["-vf", &filter_p1])
+        .args(["-filter_complex", &filter_p1])
+        // `-update 1` tells image2 this is a single image, not a
+        // sequence — without it every pass logs a filename-pattern
+        // warning. The probe branch drains into the null muxer, which
+        // never opens its "-" placeholder (AVFMT_NOFILE), so it can't
+        // collide with the metadata prints on stdout.
+        .args(["-map", "[pal]", "-update", "1"])
         .arg(&palette_tmp)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        // Was `Stdio::null()`, which made `palette pass failed` an
-        // undiagnosable dead end — the palette pass runs the same filter
-        // chain as the encode, so it's exactly where a bad filter shows
-        // up first.
-        .stderr(Stdio::piped());
-    hide_console(&mut palette_cmd);
+        .args(["-map", "[probe_out]", "-f", "null", "-"]);
+    // stdio and console suppression are handled inside run_with_progress.
     // Delete the palette on every exit from this function (success, error,
     // or panic unwind) so we don't leak temp PNGs across crashed encodes.
     struct PaletteGuard(PathBuf);
@@ -2128,7 +2210,15 @@ fn encode_gif_once(
     }
     let _palette_guard = PaletteGuard(palette_tmp.clone());
 
-    run_quiet_cancellable(palette_cmd, "palette pass")?;
+    run_with_progress(
+        palette_cmd,
+        duration_s,
+        file_index,
+        total_files,
+        &input_display,
+        "palette",
+        &mut *on_progress,
+    )?;
 
     // Pass 2: apply palette
     let filter_complex = format!(
@@ -4977,6 +5067,57 @@ fn encode_compare_images(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_sample_fps_scales_with_duration() {
+        // ~120 frames spread across the clip, clamped to 2–8 fps.
+        assert_eq!(palette_sample_fps(Some(60.0), None), Some(2.0));
+        assert_eq!(palette_sample_fps(Some(30.0), None), Some(4.0));
+        assert_eq!(palette_sample_fps(Some(15.0), None), Some(8.0)); // upper clamp
+        assert_eq!(palette_sample_fps(Some(5.0), None), Some(8.0)); // upper clamp
+        assert_eq!(palette_sample_fps(Some(600.0), None), Some(2.0)); // lower clamp
+    }
+
+    #[test]
+    fn palette_sample_fps_skips_when_it_cannot_help() {
+        // Unknown or degenerate duration → can't size the rate.
+        assert_eq!(palette_sample_fps(None, None), None);
+        assert_eq!(palette_sample_fps(Some(0.0), None), None);
+        // Preset fps at or below the sample rate → `fps=` would
+        // duplicate frames instead of dropping them.
+        assert_eq!(palette_sample_fps(Some(30.0), Some(4)), None);
+        assert_eq!(palette_sample_fps(Some(30.0), Some(3)), None);
+        assert_eq!(palette_sample_fps(Some(30.0), Some(5)), Some(4.0));
+    }
+
+    #[test]
+    fn parse_progress_seconds_reads_both_producers() {
+        // -progress blocks: out_time_ms is microseconds despite the name.
+        assert_eq!(parse_progress_seconds("out_time_ms=1500000"), Some(1.5));
+        assert_eq!(parse_progress_seconds("out_time_ms=0"), Some(0.0));
+        // metadata=print frame lines from the palette pass (real ffmpeg
+        // n8.1.2 output, whitespace included).
+        assert_eq!(
+            parse_progress_seconds("frame:119  pts:119     pts_time:59.5"),
+            Some(59.5)
+        );
+        assert_eq!(
+            parse_progress_seconds("frame:0    pts:0       pts_time:0"),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn parse_progress_seconds_ignores_noise() {
+        // Other -progress block fields, the palette probe's metadata
+        // entry line, and non-numeric junk must not produce a percent.
+        assert_eq!(parse_progress_seconds("frame=1800"), None);
+        assert_eq!(parse_progress_seconds("off.scan=1"), None);
+        assert_eq!(parse_progress_seconds("progress=end"), None);
+        assert_eq!(parse_progress_seconds("out_time_ms=N/A"), None);
+        assert_eq!(parse_progress_seconds("frame:12 pts:12"), None);
+        assert_eq!(parse_progress_seconds(""), None);
+    }
 
     /// drawtext text is unescaped twice — once by the filtergraph
     /// tokenizer, once by drawtext's expander — so these are byte-exact
