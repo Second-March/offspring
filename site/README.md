@@ -65,6 +65,21 @@ im.resize((640,round(im.height*640/im.width)),Image.LANCZOS).save('shots/main.we
 "
 ```
 
+## Analytics
+
+The page (and only the page — the app still makes zero outbound
+requests on its own) reports pageviews, pageleaves and download-button
+clicks to the shared Second March PostHog project on EU cloud
+(`eu.i.posthog.com`), the same setup as toqe.pro's landing. The sites
+share one project and are separated by `$host`. It's cookieless
+(`localStorage` persistence), session replay is disabled, and the token
+in `index.html` is public and write-only by design. The loader runs
+after the `load` event and is gated on
+`location.hostname === 'offspring.secondmarch.xyz'`, so previews, local
+copies and forks send nothing. Download CTAs are tagged with
+`data-ph-source`; each click captures a `download_click` event with an
+`offspring-` prefixed source, without touching navigation.
+
 ## Keeping it honest
 
 Every claim on the page traces to something real in this repo — the
