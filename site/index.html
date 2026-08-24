@@ -582,6 +582,11 @@
               capture_pageview: true,
               capture_pageleave: true,
               disable_session_recording: true,
+              // On by default in PostHog, so it has to be switched off explicitly.
+              // The tagged CTAs below already give us the conversion data;
+              // a blanket click stream (with element text) is more than this
+              // page needs, and more than the note in site/README.md claims.
+              autocapture: false,
             })
             // Which download CTA converts. Captured on click without
             // touching navigation — plain, cmd- and middle-clicks all
