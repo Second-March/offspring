@@ -2,6 +2,12 @@ export type Format = "gif" | "mp4" | "image" | "prores";
 export type Crop = "16:9" | "9:16" | "1:1" | "4:3";
 export type Dither = "bayer" | "floydsteinberg" | "sierra2" | "sierra24a" | "none";
 
+/** GIF playback behaviour. "forever" loops endlessly (the default and
+ *  the only pre-existing behaviour), "once" plays a single time and
+ *  holds the last frame, "pingpong" appends a reversed copy so the clip
+ *  plays forward-then-backward forever (roughly doubles file size). */
+export type GifLoopMode = "forever" | "once" | "pingpong";
+
 /** Encoder for `format=image` presets. Each codec defines its own
  *  scale for `image_quality` — see the Rust side `ImageCodec` enum
  *  for ranges. The UI's quality field re-labels and re-bounds itself
@@ -27,6 +33,8 @@ export interface Preset {
   palette_colors?: number | null;
   dither?: Dither | null;
   bayer_scale?: number | null;
+  /** GIF-format only. Null is treated as "forever" by the encoder. */
+  loop_mode?: GifLoopMode | null;
   crf?: number | null;
   preset_speed?: string | null;
   video_bitrate?: string | null;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Preset, ImageCodec, ProResProfile } from "$lib/types";
+  import type { Preset, ImageCodec, ProResProfile, GifLoopMode } from "$lib/types";
 
   // The `min`/`max` attributes on a number input only gate the stepper
   // and form validation — a typed or pasted value sails straight past
@@ -366,6 +366,21 @@
         />
       </div>
     {/if}
+    <div>
+      <label title="Ping-pong appends a reversed copy of the clip (plays forward, then backward, forever) — roughly doubles the file size.">
+        Loop
+      </label>
+      <select
+        value={preset.loop_mode ?? "forever"}
+        onchange={(e) => {
+          preset.loop_mode = (e.currentTarget as HTMLSelectElement).value as GifLoopMode;
+        }}
+      >
+        <option value="forever">Loop forever</option>
+        <option value="once">Play once</option>
+        <option value="pingpong">Ping-pong (forward + backward)</option>
+      </select>
+    </div>
   </div>
 {:else if preset.format === "prores"}
   <h4 class="subhead">ProRes options</h4>

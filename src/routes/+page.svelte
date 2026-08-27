@@ -475,6 +475,7 @@
       palette_colors: 128,
       dither: "bayer",
       bayer_scale: 3,
+      loop_mode: "forever",
       crf: 23,
       preset_speed: "medium",
       video_bitrate: null,

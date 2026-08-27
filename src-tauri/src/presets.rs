@@ -151,6 +151,25 @@ pub enum Dither {
     None,
 }
 
+/// GIF playback behaviour, written into the file's Netscape loop
+/// extension (and, for `PingPong`, baked into the frames themselves).
+///
+/// * `Forever` — loop endlessly. What every GIF viewer expects and the
+///   behaviour all presets had before this field existed.
+/// * `Once` — play through a single time and hold on the last frame
+///   (`-loop -1`: no Netscape extension is written at all).
+/// * `PingPong` — append a reversed copy of the clip so playback runs
+///   forward then backward, and loop that forever. Doubles the frame
+///   count (not the palette work), so the output is roughly twice the
+///   size of `Forever` for the same clip.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GifLoopMode {
+    Forever,
+    Once,
+    PingPong,
+}
+
 /// How the Modify tool fills in (or throws away) frames after a speed
 /// change. Never serialized — the Modify dialog picks one per encode.
 ///
@@ -206,6 +225,11 @@ pub struct Preset {
     pub dither: Option<Dither>,
     #[serde(default)]
     pub bayer_scale: Option<u32>,
+    /// Loop behaviour of the output GIF. `None` means `Forever` — the
+    /// only behaviour that existed before this field, so presets.json
+    /// files written by older versions keep encoding identically.
+    #[serde(default)]
+    pub loop_mode: Option<GifLoopMode>,
 
     // mp4-specific
     #[serde(default)]

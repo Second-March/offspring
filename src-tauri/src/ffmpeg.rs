@@ -13,8 +13,8 @@ use std::os::windows::process::CommandExt;
 
 use crate::paths;
 use crate::presets::{
-    Crop, Dither, Format, GuidesConfig, OverlayConfig, OverlaySlotKind, Preset, Settings,
-    SpeedInterp,
+    Crop, Dither, Format, GifLoopMode, GuidesConfig, OverlayConfig, OverlaySlotKind, Preset,
+    Settings, SpeedInterp,
 };
 use crate::sequence::SequenceInfo;
 
@@ -2069,6 +2069,7 @@ fn encode_gif_once(
     let input_display = input.display();
     let palette_colors = preset.palette_colors.unwrap_or(128);
     let dither = preset.dither.clone().unwrap_or(Dither::Bayer);
+    let loop_mode = preset.loop_mode.unwrap_or(GifLoopMode::Forever);
 
     // Build the filter chain honouring the width override. This MUST go
     // through the shared builder: the GIF branch previously assembled its
@@ -2221,15 +2222,32 @@ fn encode_gif_once(
     )?;
 
     // Pass 2: apply palette
-    let filter_complex = format!(
-        "{filter}[x];[x][1:v]paletteuse={dither}",
-        filter = if filter.is_empty() {
-            "[0:v]null".to_string()
-        } else {
-            format!("[0:v]{filter}")
-        },
-        dither = dither_arg(&dither, preset.bayer_scale),
-    );
+    //
+    // Ping-pong bolts onto the END of the shared chain, in this pass
+    // only: the reversed half repeats the same frames the palette pass
+    // already histogrammed, so feeding it to palettegen would double
+    // that pass's runtime for an identical palette. No `trim` on the
+    // reversed branch — dropping the boundary frame would break on
+    // single-frame inputs (a still image through a GIF preset), and the
+    // one duplicated frame reads as a natural beat at the turn.
+    let base = if filter.is_empty() {
+        "[0:v]null".to_string()
+    } else {
+        format!("[0:v]{filter}")
+    };
+    let filter_complex = match loop_mode {
+        GifLoopMode::PingPong => format!(
+            "{base},split[pp_f][pp_b];\
+             [pp_b]reverse[pp_r];\
+             [pp_f][pp_r]concat=n=2:v=1:a=0[x];\
+             [x][1:v]paletteuse={dither}",
+            dither = dither_arg(&dither, preset.bayer_scale),
+        ),
+        _ => format!(
+            "{base}[x];[x][1:v]paletteuse={dither}",
+            dither = dither_arg(&dither, preset.bayer_scale),
+        ),
+    };
 
     on_progress(ProgressEvent {
         file_index,
@@ -2258,11 +2276,29 @@ fn encode_gif_once(
     cmd.arg("-i")
         .arg(&palette_tmp)
         .args(["-filter_complex", &filter_complex])
+        // GIF muxer's Netscape loop extension: 0 = loop forever (also
+        // ffmpeg's own default, kept explicit), -1 = write no extension
+        // at all, which every conforming viewer renders as play-once.
+        // Ping-pong loops its forward+backward cycle forever.
+        .args([
+            "-loop",
+            match loop_mode {
+                GifLoopMode::Once => "-1",
+                _ => "0",
+            },
+        ])
         .args(["-progress", "pipe:1"])
         .arg(out);
+    // Ping-pong's output runs the clip twice, and the progress percent
+    // is out_time over duration — leave the source duration in place
+    // and the bar would hit 100% at the halfway mark and sit there.
+    let encode_duration_s = match loop_mode {
+        GifLoopMode::PingPong => duration_s.map(|d| d * 2.0),
+        _ => duration_s,
+    };
     run_with_progress_cleanup(
         cmd,
-        duration_s,
+        encode_duration_s,
         file_index,
         total_files,
         &input_display,
@@ -2623,6 +2659,7 @@ pub fn derive_merge_preset(ffmpeg: &Path, first: &Path) -> Preset {
         palette_colors: Some(128),
         dither: Some(Dither::Bayer),
         bayer_scale: Some(3),
+        loop_mode: None,
         // MP4 defaults — ignored when format=Gif.
         crf: Some(23),
         preset_speed: Some("medium".into()),
@@ -2702,6 +2739,7 @@ pub fn derive_grayscale_preset(ffmpeg: &Path, input: &Path) -> Preset {
             palette_colors: None,
             dither: None,
             bayer_scale: None,
+            loop_mode: None,
             crf: None,
             preset_speed: None,
             video_bitrate: None,
@@ -2754,6 +2792,7 @@ pub fn derive_grayscale_preset(ffmpeg: &Path, input: &Path) -> Preset {
         palette_colors: Some(128),
         dither: Some(Dither::Bayer),
         bayer_scale: Some(3),
+        loop_mode: None,
         crf: Some(23),
         preset_speed: Some("medium".into()),
         video_bitrate: None,
@@ -2848,6 +2887,7 @@ pub fn derive_overlay_preset(ffmpeg: &Path, input: &Path, cfg: OverlayConfig) ->
             palette_colors: None,
             dither: None,
             bayer_scale: None,
+            loop_mode: None,
             crf: None,
             preset_speed: None,
             video_bitrate: None,
@@ -2896,6 +2936,7 @@ pub fn derive_overlay_preset(ffmpeg: &Path, input: &Path, cfg: OverlayConfig) ->
         palette_colors: Some(128),
         dither: Some(Dither::Bayer),
         bayer_scale: Some(3),
+        loop_mode: None,
         crf: Some(20),
         preset_speed: Some("medium".into()),
         video_bitrate: None,
@@ -4826,6 +4867,7 @@ pub fn derive_modify_preset(
             palette_colors: None,
             dither: None,
             bayer_scale: None,
+            loop_mode: None,
             crf: None,
             preset_speed: None,
             video_bitrate: None,
@@ -4895,6 +4937,7 @@ pub fn derive_modify_preset(
         palette_colors: Some(128),
         dither: Some(Dither::Bayer),
         bayer_scale: Some(3),
+        loop_mode: None,
         // Visually-lossless baseline — Crop is "preserve everything,
         // just remove pixels outside the rect".
         crf: Some(18),
