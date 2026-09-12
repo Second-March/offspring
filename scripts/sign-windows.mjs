@@ -21,7 +21,8 @@
 // Standard pattern below, so it ships unsigned and its users still meet an unknown
 // publisher. Adding it is one line and one more signature per release.
 //
-// NO CREDENTIALS = SKIP, PARTIAL CREDENTIALS = FAIL. A local build and any machine
+// NO CREDENTIALS = SKIP, PARTIAL = FAIL, AND A SKIP THE RUN DID NOT EXPECT =
+// FAIL TOO. A local build and any machine without the secrets must still
 // without the secrets must still produce an (unsigned) installer, so a clean absence
 // is a skip. But a HALF-configured runner is a broken runner wearing a working one's
 // clothes — it would ship unsigned binaries under a workflow that believes it signed.
@@ -70,6 +71,20 @@ const present = Object.entries(creds).filter(([, v]) => v)
 const missing = Object.entries(creds).filter(([, v]) => !v).map(([k]) => k)
 
 if (present.length === 0) {
+  // A SILENT SKIP IS ONLY SAFE WHEN NOBODY EXPECTED A SIGNATURE. The workflow
+  // sets SIGN_WINDOWS_EXPECTED once it has decided this run signs (the toggle is
+  // on AND the secrets exist), so reaching here with it set means the credentials
+  // never reached the build step - which is how relay v0.6.9 published an unsigned
+  // installer from a green run. The all-or-none rule below cannot catch that: ALL
+  // four are absent, not some, so it reads as a deliberate local build.
+  if (process.env.SIGN_WINDOWS_EXPECTED) {
+    console.error(`sign-windows: this run was meant to sign ${name}, but no eSigner`)
+    console.error('credentials reached this process. The workflow decided to sign and')
+    console.error('then did not pass ES_USERNAME / ES_PASSWORD / ES_CREDENTIAL_ID /')
+    console.error('ES_TOTP_SECRET down to the build step. Refusing to publish an')
+    console.error('unsigned build from a run that believes it signed one.')
+    process.exit(1)
+  }
   console.log(`sign-windows: no eSigner credentials — leaving ${name} unsigned.`)
   process.exit(0)
 }

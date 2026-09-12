@@ -183,6 +183,10 @@ jobs:
           $bat = Get-ChildItem $dir -Filter "CodeSignTool.bat" -Recurse | Select-Object -First 1
           if (-not $bat) { throw "CodeSignTool.bat not found in the downloaded archive" }
           "CODESIGNTOOL_PATH=$($bat.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Tell the signing script a signature is EXPECTED on this run, so a missing
+          # credential turns into a failed build instead of a quiet skip that ships an
+          # unsigned installer under a green tick (relay v0.6.9).
+          "SIGN_WINDOWS_EXPECTED=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "CodeSignTool at $($bat.FullName)"
 
       - name: Build Standard + Studio installers
