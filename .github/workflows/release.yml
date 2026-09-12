@@ -160,12 +160,45 @@ jobs:
           $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 @($pfxPath, $pw)
           Write-Host "MSIX signing cert: $($cert.Subject) thumbprint $($cert.Thumbprint) valid to $($cert.NotAfter)"
 
+      # WINDOWS AUTHENTICODE SIGNING (SSL.com eSigner). OFF unless vars.SIGN_WINDOWS
+      # is "true" on this repo: the ES_* secrets are shared by every Second March
+      # app against one metered plan, so their presence cannot mean "sign here".
+      #
+      # CodeSignTool is FETCHED PER RUN rather than installed on a machine, and that
+      # is deliberate. offspring is the one PUBLIC repo of the five; a self-hosted
+      # runner on a public repo lets any fork PR execute code on the box holding
+      # every signing credential, and GitHub refuses to register one (a bare 404
+      # from the runner-registration endpoint - not a misconfiguration). Public
+      # repos also get unlimited Actions minutes, so self-hosting would save
+      # nothing. ~200MB, seconds on a hosted runner; wrap it in actions/cache only
+      # if that ever becomes the slow part.
+      - name: Fetch CodeSignTool
+        if: vars.SIGN_WINDOWS == 'true'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "codesigntool"
+          $zip = Join-Path $env:RUNNER_TEMP "codesigntool.zip"
+          Invoke-WebRequest -Uri "https://ssl.com/download/codesigntool-for-windows/" -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $bat = Get-ChildItem $dir -Filter "CodeSignTool.bat" -Recurse | Select-Object -First 1
+          if (-not $bat) { throw "CodeSignTool.bat not found in the downloaded archive" }
+          "CODESIGNTOOL_PATH=$($bat.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "CodeSignTool at $($bat.FullName)"
+
       - name: Build Standard + Studio installers
         shell: pwsh
         # -NonInteractive so anything that tries to prompt fails loudly
         # instead of blocking on stdin. A cmdlet waiting for input on a
         # runner is invisible: no output, no error, just a step that
         # runs until the job's six-hour ceiling.
+        env:
+          # All four or none: the script skips on a clean absence and FAILS on a
+          # partial set, so an unsigned build can never ship from a run that
+          # believed it signed. Empty here means the toggle is off.
+          ES_USERNAME: ${{ vars.SIGN_WINDOWS == 'true' && secrets.ES_USERNAME || '' }}
+          ES_PASSWORD: ${{ vars.SIGN_WINDOWS == 'true' && secrets.ES_PASSWORD || '' }}
+          ES_CREDENTIAL_ID: ${{ vars.SIGN_WINDOWS == 'true' && secrets.ES_CREDENTIAL_ID || '' }}
+          ES_TOTP_SECRET: ${{ vars.SIGN_WINDOWS == 'true' && secrets.ES_TOTP_SECRET || '' }}
         run: pwsh -NonInteractive -NoProfile tools/build-release.ps1 -NoBump -SkipInstall
 
       - name: Sign installers (rsign)

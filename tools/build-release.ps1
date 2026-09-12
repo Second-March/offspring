@@ -120,6 +120,14 @@ try {
     $exe = Join-Path $targetRelease "offspring.exe"
     if (-not (Test-Path $exe)) { throw "offspring.exe not at $exe after tauri build" }
 
+    # Authenticode-sign offspring.exe HERE, before Inno packages it. Signing the
+    # copy in installer/dist afterwards would put the signature on a file nobody
+    # runs - what users launch is the one Inno embedded. Without eSigner
+    # credentials this skips and the build carries on unsigned, so local builds
+    # are unaffected; the rules are in scripts/sign-windows.mjs.
+    node (Join-Path $repoRoot "scripts/sign-windows.mjs") $exe
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for offspring.exe" }
+
     # --- 3. shell-ext DLL ------------------------------------------------
     Write-Host ""
     Write-Host "[3/7] cargo build --release (shell-ext)..." -ForegroundColor Yellow
@@ -237,6 +245,10 @@ try {
     if (-not (Test-Path $installer)) {
         throw "Expected installer at $installer but it wasn't produced"
     }
+
+    # And the installer itself - the file SmartScreen inspects on download.
+    node (Join-Path $repoRoot "scripts/sign-windows.mjs") $installer
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $installer" }
 
     # --- 6. Offspring Studio ---------------------------------------------
     # Same Rust + frontend tree, compiled with --features studio into a
