@@ -501,6 +501,30 @@ fn build_filter_chain_with_width(preset: &Preset, width_override: Option<u32>) -
     parts.join(",")
 }
 
+/// Append a step that rounds the frame down to even width and height.
+///
+/// Every H.264 encoder we use (libx264, h264_nvenc) refuses odd
+/// dimensions in yuv420p — 4:2:0 chroma is sampled per 2×2 block, so a
+/// 2270×281 source dies at encoder open with "width or height not
+/// divisible by 2" and ffmpeg exits with `AVERROR_EXTERNAL`
+/// (`0xdfaba7bb` on Windows). The crop rect is already forced even at
+/// clamp time, but nothing guards the SOURCE, an aspect crop, or a
+/// preset that names both width and height. Losing one row or column
+/// is invisible; the `-2` scale forms already do the same.
+///
+/// `scale` with unchanged size and format is a pass-through in
+/// ffmpeg, so even sources pay nothing. Only the MP4 path calls this:
+/// GIF, image and ProRes outputs accept odd sizes and must keep
+/// producing pixel-identical files.
+fn with_even_dimensions(filter: &str) -> String {
+    const EVEN: &str = "scale=trunc(iw/2)*2:trunc(ih/2)*2";
+    if filter.is_empty() {
+        EVEN.to_string()
+    } else {
+        format!("{filter},{EVEN}")
+    }
+}
+
 /// The preset's speed multiplier, or `None` when it doesn't change
 /// speed. Clamped to the range the dialog offers so a hand-edited or
 /// malformed value can't produce a divide-by-zero (or a negative)
@@ -1196,7 +1220,7 @@ pub fn encode_file_to(
             }
         }
         Format::Mp4 => {
-            let filter = build_filter_chain(preset);
+            let filter = with_even_dimensions(&build_filter_chain(preset));
             // Hardware encoder selection. The `use_cuda` flag is a
             // historical name — semantically it means "use the platform's
             // hardware H.264 encoder if available." On Windows that maps
@@ -2004,6 +2028,20 @@ fn diagnose_stderr(lines: &[String]) -> Option<String> {
              it outright, so no frames could be read.\n\
              {remedy} Failing that, re-export the source as H.264."
         ));
+    }
+    // libx264 and h264_nvenc both refuse odd dimensions in yuv420p.
+    // The MP4 path rounds down to even before encoding, so this only
+    // fires on a path that doesn't (an external command, a build that
+    // predates the guard) — but it beats showing a raw
+    // `AVERROR_EXTERNAL` hex code.
+    if lines.iter().any(|l| l.contains("not divisible by 2")) {
+        return Some(
+            "The output frame has an odd width or height, which H.264 can't encode \
+             (4:2:0 chroma needs both to be even).\n\
+             Fix: pick an output size with even width and height, or crop one pixel \
+             off the odd edge."
+                .to_string(),
+        );
     }
     None
 }
@@ -5240,6 +5278,39 @@ mod tests {
             "Error initializing complex filters.".to_string(),
         ])
         .is_none());
+    }
+
+    /// A 2270×281 source: libx264 refuses the odd height at encoder
+    /// open and ffmpeg exits with AVERROR_EXTERNAL, which Windows shows
+    /// as `0xdfaba7bb`. The hint has to name the real cause.
+    #[test]
+    fn diagnoses_odd_dimensions_rejected_by_h264() {
+        let lines = vec![
+            "[libx264 @ 0x1] width or height not divisible by 2 (2270x281)".to_string(),
+            "Error while opening encoder for output stream #0:0 - maybe incorrect parameters such as bit_rate, rate, width or height".to_string(),
+        ];
+        let hint = diagnose_stderr(&lines).expect("should recognise the odd-dimension failure");
+        assert!(hint.contains("even"), "{hint}");
+    }
+
+    /// The MP4 path must always end its filter chain with the even-size
+    /// guard — on its own when the preset adds no filters, and after
+    /// every other step otherwise, so it sees the final frame size
+    /// (a 90° rotate swaps width and height; a crop can leave either
+    /// odd).
+    #[test]
+    fn mp4_chain_ends_with_even_dimension_guard() {
+        assert_eq!(with_even_dimensions(""), "scale=trunc(iw/2)*2:trunc(ih/2)*2");
+        assert_eq!(
+            with_even_dimensions("crop=101:281:0:0,transpose=1"),
+            "crop=101:281:0:0,transpose=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        );
+        // GIF and image chains are untouched: they take odd sizes fine
+        // and must keep producing identical output.
+        let mut p = crate::defaults::default_custom();
+        p.width = Some(481);
+        p.height = None;
+        assert!(!build_filter_chain(&p).contains("trunc(iw/2)"));
     }
 
     #[test]
